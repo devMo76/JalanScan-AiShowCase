@@ -6,6 +6,7 @@
 # Phase 6: Submit Route (/submit)     ✅
 # Phase 10: /api/stats/weekly         ✅
 # Phase 10: /api/export/csv           ✅
+# Phase 13: Status Tracking           ✅
 # ============================================================
 
 import os
@@ -223,14 +224,13 @@ def api_reports():
 # ── Phase 10: Weekly stats ────────────────────────────────────
 @app.route("/api/stats/weekly", methods=["GET"])
 def api_stats_weekly():
-    """Return report counts for the last 7 days."""
     conn = get_db()
     today = datetime.now().date()
     result = []
-    for i in range(6, -1, -1):          # 6 days ago → today
+    for i in range(6, -1, -1):
         day = today - timedelta(days=i)
         day_str = day.strftime("%Y-%m-%d")
-        label   = day.strftime("%d %b")  # e.g. "18 Jun"
+        label   = day.strftime("%d %b")
         row = conn.execute(
             "SELECT COUNT(*) as cnt FROM reports WHERE timestamp LIKE ?",
             (f"{day_str}%",)
@@ -243,7 +243,6 @@ def api_stats_weekly():
 # ── Phase 10: Export CSV ──────────────────────────────────────
 @app.route("/api/export/csv", methods=["GET"])
 def api_export_csv():
-    """Download all reports as a CSV file."""
     conn = get_db()
     rows = conn.execute(
         "SELECT id, damage_type, confidence, severity, latitude, longitude, status, timestamp "
@@ -274,6 +273,22 @@ def api_export_csv():
         mimetype="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
+
+# ── Phase 13: Status Tracking ─────────────────────────────────
+@app.route("/api/report/<int:report_id>/status", methods=["PATCH", "OPTIONS"])
+def update_status(report_id):
+    if request.method == "OPTIONS":
+        return "", 204
+    data = request.get_json()
+    new_status = data.get("status", "")
+    if new_status not in ("Pending", "In Progress", "Fixed"):
+        return jsonify({"success": False, "error": "Invalid status"}), 400
+    conn = get_db()
+    conn.execute("UPDATE reports SET status = ? WHERE id = ?", (new_status, report_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "status": new_status})
 
 
 # ── Dev/test helpers ──────────────────────────────────────────

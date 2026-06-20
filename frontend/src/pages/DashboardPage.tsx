@@ -238,7 +238,12 @@ export default function DashboardPage() {
     const heatData: [number, number, number][] = [];
 
     reports.forEach((r) => {
-      const color = SEVERITY_COLOR[r.severity] ?? "#94a3b8";
+      const color =
+        r.status === "Fixed"
+          ? "#6b7280"
+          : r.status === "In Progress"
+            ? "#60a5fa"
+            : (SEVERITY_COLOR[r.severity] ?? "#94a3b8");
       const intensity =
         r.severity === "High" ? 1.0 : r.severity === "Medium" ? 0.6 : 0.3;
       heatData.push([r.latitude, r.longitude, intensity]);
@@ -249,19 +254,28 @@ export default function DashboardPage() {
         : `/${r.image_path}`;
 
       const popupHtml = `
-        <div class="jalanscan-popup" style="min-width:200px;max-width:240px;font-family:'Poppins',sans-serif;">
-          <img src="${imgUrl}" alt="Damage photo" onerror="this.style.display='none'" />
-          <p style="font-size:13px;font-weight:700;color:#f1f5f9;margin:0 0 4px 0;">${r.damage_type}</p>
-          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
-            <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:${color}22;color:${color};border:1px solid ${color}55;font-weight:600;">${r.severity}</span>
-            <span style="font-size:11px;color:#94a3b8;">Confidence: <b style="color:#e2e8f0;">${confidencePct}</b></span>
-          </div>
-          <p style="font-size:11px;color:#64748b;margin:0 0 2px 0;">${r.timestamp}</p>
-          <p style="font-size:11px;margin:0;">
-            Status: <span style="font-weight:600;color:${r.status === "Fixed" ? "#4ade80" : r.status === "In Progress" ? "#60a5fa" : "#facc15"};">${r.status}</span>
-          </p>
-        </div>
-      `;
+  <div class="jalanscan-popup" style="min-width:200px;max-width:240px;font-family:'Poppins',sans-serif;">
+    <img src="${imgUrl}" alt="Damage photo" onerror="this.style.display='none'" />
+    <p style="font-size:13px;font-weight:700;color:#f1f5f9;margin:0 0 4px 0;">${r.damage_type}</p>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+      <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:${color}22;color:${color};border:1px solid ${color}55;font-weight:600;">${r.severity}</span>
+      <span style="font-size:11px;color:#94a3b8;">Confidence: <b style="color:#e2e8f0;">${confidencePct}</b></span>
+    </div>
+    <p style="font-size:11px;color:#64748b;margin:0 0 8px 0;">${r.timestamp}</p>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <label style="font-size:11px;color:#94a3b8;">Status:</label>
+      <select
+        id="status-select-${r.id}"
+        onchange="window.jalanUpdateStatus(${r.id}, this.value, this)"
+        style="flex:1;background:#07111f;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:3px 6px;font-size:11px;font-family:'Poppins',sans-serif;cursor:pointer;"
+      >
+        <option value="Pending" ${r.status === "Pending" ? "selected" : ""}>Pending</option>
+        <option value="In Progress" ${r.status === "In Progress" ? "selected" : ""}>In Progress</option>
+        <option value="Fixed" ${r.status === "Fixed" ? "selected" : ""}>Fixed</option>
+      </select>
+    </div>
+  </div>
+`;
 
       const marker = L.circleMarker([r.latitude, r.longitude], {
         radius: 9,
@@ -432,6 +446,39 @@ export default function DashboardPage() {
     const timer = setTimeout(renderChart, 600);
     return () => clearTimeout(timer);
   }, [cdnReady]);
+
+  // ── Phase 13: expose status updater to popup HTML ────────────
+  (window as any).jalanUpdateStatus = async (
+    id: number,
+    newStatus: string,
+    selectEl: HTMLSelectElement,
+  ) => {
+    try {
+      const res = await fetch(`/api/report/${id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (!res.ok) throw new Error("Request failed");
+
+      // Recolor the marker live
+      const entry = allMarkersRef.current.find((e) => e.report.id === id);
+      if (entry) {
+        entry.report.status = newStatus;
+        const newColor =
+          newStatus === "Fixed"
+            ? "#6b7280"
+            : newStatus === "In Progress"
+              ? "#60a5fa"
+              : (SEVERITY_COLOR[entry.report.severity] ?? "#94a3b8");
+        entry.marker.setStyle({ fillColor: newColor });
+      }
+    } catch {
+      selectEl.value = selectEl.dataset.prev ?? "Pending";
+      alert("Failed to update status. Try again.");
+    }
+    selectEl.dataset.prev = newStatus;
+  };
 
   // ── Render ─────────────────────────────────────────────────
   return (
