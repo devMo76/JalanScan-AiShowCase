@@ -2,6 +2,7 @@
 // JalanScan Ai — DashboardPage.tsx
 // Phase 9:  Authority Dashboard — Layout       ✅
 // Phase 10: Map & Pins + Heatmap + Chart       ✅
+// Phase 12: Damage Type Filter (data-driven)   ✅
 // ============================================================
 
 import { useEffect, useRef, useState, useCallback } from "react";
@@ -70,12 +71,6 @@ const SEVERITY_COLOR: Record<string, string> = {
   High: "#ef4444",
   Medium: "#facc15",
   Low: "#4ade80",
-};
-
-const STATUS_BADGE: Record<string, string> = {
-  Pending: "bg-yellow-500/20 text-yellow-300 border border-yellow-500/40",
-  "In Progress": "bg-blue-500/20 text-blue-300 border border-blue-500/40",
-  Fixed: "bg-green-500/20 text-green-300 border border-green-500/40",
 };
 
 // ── Sub-components ───────────────────────────────────────────
@@ -161,6 +156,11 @@ export default function DashboardPage() {
     medium: "—",
     lowFixed: "—",
   });
+
+  // Unique damage types present in the data, for the filter dropdown
+  const damageTypes = Array.from(
+    new Set(reports.map((r) => r.damage_type)),
+  ).sort();
 
   // ── 1. Load CDNs, then fetch data ─────────────────────────
   useCDN(useCallback(() => setCdnReady(true), []));
@@ -294,19 +294,6 @@ export default function DashboardPage() {
         heatLayerRef.current.addTo(map);
       }
     }
-
-    // Stat cards
-    const high = reports.filter((r) => r.severity === "High").length;
-    const medium = reports.filter((r) => r.severity === "Medium").length;
-    const lowFixed = reports.filter(
-      (r) => r.severity === "Low" || r.status === "Fixed",
-    ).length;
-    setStats({
-      total: String(reports.length),
-      high: String(high),
-      medium: String(medium),
-      lowFixed: String(lowFixed),
-    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reports]);
 
@@ -326,7 +313,7 @@ export default function DashboardPage() {
     }
   }, [activeLayer]);
 
-  // ── 5. Wire filter dropdown ───────────────────────────────
+  // ── 5. Wire filter dropdown (single source of truth for stats) ──
   useEffect(() => {
     allMarkersRef.current.forEach(({ marker, report }) => {
       const pinsLayer = pinsLayerRef.current;
@@ -340,7 +327,7 @@ export default function DashboardPage() {
       }
     });
 
-    // Update stat cards for filtered subset
+    // Update stat cards for the filtered subset
     const filtered =
       filterValue === "all"
         ? reports
@@ -561,10 +548,11 @@ export default function DashboardPage() {
               }}
             >
               <option value="all">All Damage Types</option>
-              <option value="Pothole">Pothole</option>
-              <option value="Longitudinal Crack">Longitudinal Crack</option>
-              <option value="Transverse Crack">Transverse Crack</option>
-              <option value="Alligator Crack">Alligator Crack</option>
+              {damageTypes.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
             </select>
           </div>
           <div className="ml-auto" />
