@@ -17,8 +17,25 @@ import io
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request, Response
 import requests
+try:
+    from flask_cors import CORS
+    cors_available = True
+except Exception:
+    cors_available = False
 
 app = Flask(__name__)
+if cors_available:
+    CORS(app)
+
+
+@app.after_request
+def _allow_cors(response):
+    # If flask_cors is not available, add permissive CORS headers for development
+    if not cors_available:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,PATCH,OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    return response
 
 MODEL_PATH = os.path.join("model", "road_damage.pt")
 
@@ -156,25 +173,39 @@ def submit():
         upload_path = os.path.join("static", "uploads", unique_name).replace("\\", "/")
         photo.save(upload_path)
 
-        # Call external AI webhook
-        webhook_res = call_external_webhook(upload_path)
-        if webhook_res is None or not webhook_res.get("success", False):
-            return jsonify({"success": False, "error": "AI webhook failed or returned no result"}), 500
-
-        # Map webhook response to DB fields
-        damage_type = webhook_res.get("damage_type", "Unknown")
-        raw_conf = webhook_res.get("confidence", 0)
-        try:
-            confidence = float(raw_conf)
-            if confidence > 1:
-                confidence = confidence / 100.0
-        except Exception:
-            confidence = 0.0
-        severity = webhook_res.get("severity", "Low")
-        description = webhook_res.get("description", "")
-        recommended_action = webhook_res.get("recommended_action", "")
-        status_val = webhook_res.get("status", "Pending")
-        timestamp_val = webhook_res.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        # If the frontend already called the webhook and provided detection fields,
+        # use those fields instead of calling the webhook again.
+        if request.form.get("damage_type"):
+            damage_type = request.form.get("damage_type")
+            try:
+                confidence = float(request.form.get("confidence", 0))
+                if confidence > 1:
+                    confidence = confidence / 100.0
+            except Exception:
+                confidence = 0.0
+            severity = request.form.get("severity", "Low")
+            description = request.form.get("description", "")
+            recommended_action = request.form.get("recommended_action", "")
+            status_val = request.form.get("status", "Pending")
+            timestamp_val = request.form.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        else:
+            # Call external AI webhook (server-side fallback)
+            webhook_res = call_external_webhook(upload_path)
+            if webhook_res is None or not webhook_res.get("success", False):
+                return jsonify({"success": False, "error": "AI webhook failed or returned no result"}), 500
+            damage_type = webhook_res.get("damage_type", "Unknown")
+            raw_conf = webhook_res.get("confidence", 0)
+            try:
+                confidence = float(raw_conf)
+                if confidence > 1:
+                    confidence = confidence / 100.0
+            except Exception:
+                confidence = 0.0
+            severity = webhook_res.get("severity", "Low")
+            description = webhook_res.get("description", "")
+            recommended_action = webhook_res.get("recommended_action", "")
+            status_val = webhook_res.get("status", "Pending")
+            timestamp_val = webhook_res.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         conn = get_db()
         conn.execute("""

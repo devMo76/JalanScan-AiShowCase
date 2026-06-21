@@ -84,27 +84,35 @@ export default function CitizenPage() {
       const webhookUrl = "https://aishowcase.app.n8n.cloud/webhook/image";
       const res = await fetch(webhookUrl, { method: "POST", body: formData });
 
-      // Attempt to parse JSON response; handle empty or non-JSON bodies
+      // Parse webhook response (n8n usually returns an array)
       let raw: any = null;
       try {
         raw = await res.json();
-      } catch (e) {
+      } catch {
         const txt = await res.text();
-        if (!txt) raw = [{ success: true, damage_detected: false }];
-        else raw = [{ success: true, damage_detected: false, description: txt }];
+        raw = txt ? [{ success: true, damage_detected: false, description: txt }] : [{ success: true, damage_detected: false }];
       }
       const webhookResp = Array.isArray(raw) ? raw[0] : raw;
 
-      const data: SubmitResponse = {
-        success: webhookResp?.success ?? true,
-        damage_type: webhookResp?.damage_type,
-        confidence: webhookResp?.confidence ? (webhookResp.confidence > 1 ? webhookResp.confidence / 100 : webhookResp.confidence) : undefined,
-        severity: webhookResp?.severity,
-        result_image: webhookResp?.result_image ?? undefined,
-        detected: webhookResp?.damage_detected ?? undefined,
-        timestamp: webhookResp?.timestamp ?? undefined,
-        error: webhookResp?.error ?? undefined,
-      };
+      // Forward file + webhook fields to backend to store in DB and keep the map in sync
+      const storeForm = new FormData();
+      storeForm.append("photo", file, file.name);
+      storeForm.append("latitude", lat);
+      storeForm.append("longitude", lng);
+      if (webhookResp) {
+        if (webhookResp.damage_type) storeForm.append("damage_type", webhookResp.damage_type);
+        if (webhookResp.confidence !== undefined) storeForm.append("confidence", String(webhookResp.confidence));
+        if (webhookResp.severity) storeForm.append("severity", webhookResp.severity);
+        if (webhookResp.description) storeForm.append("description", webhookResp.description);
+        if (webhookResp.recommended_action) storeForm.append("recommended_action", webhookResp.recommended_action);
+        if (webhookResp.status) storeForm.append("status", webhookResp.status);
+        if (webhookResp.timestamp) storeForm.append("timestamp", webhookResp.timestamp);
+      }
+
+      const backendRes = await fetch("http://127.0.0.1:5000/submit", { method: "POST", body: storeForm });
+      const backendJson = await backendRes.json();
+
+      const data: SubmitResponse = backendJson;
       Swal.close();
 
       if (data.success) {
