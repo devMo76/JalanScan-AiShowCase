@@ -262,6 +262,8 @@ export default function DashboardPage() {
       <span style="font-size:11px;color:#94a3b8;">Confidence: <b style="color:#e2e8f0;">${confidencePct}</b></span>
     </div>
     <p style="font-size:11px;color:#64748b;margin:0 0 8px 0;">${r.timestamp}</p>
+    ${r.description ? `<p style="font-size:12px;color:#cbd5e1;margin:0 0 8px 0;">${r.description}</p>` : ''}
+    ${r.recommended_action ? `<p style="font-size:12px;color:#9ae6b4;margin:0 0 8px 0;font-weight:600;">Action: ${r.recommended_action}</p>` : ''}
     <div style="display:flex;align-items:center;gap:8px;">
       <label style="font-size:11px;color:#94a3b8;">Status:</label>
       <select
