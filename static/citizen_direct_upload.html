@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Citizen Direct Upload to n8n</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial;background:#0f172a;color:#e6eef8;padding:24px}
+    .card{max-width:680px;margin:40px auto;padding:20px;border-radius:12px;background:#071122}
+    button{padding:10px 14px;border-radius:8px;border:0;background:#ef4444;color:white;cursor:pointer}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Citizen - Upload image to n8n webhook</h2>
+
+    <input id="fileInput" type="file" accept="image/*"><br><br>
+    <label for="webhook">Webhook URL</label><br>
+    <input id="webhook" type="text" value="https://aishowcase.app.n8n.cloud/webhook/image" style="width:100%"><br><br>
+    <button id="sendBtn">Send</button>
+
+    <h3>Result</h3>
+    <pre id="out" style="white-space:pre-wrap;background:#07111f;padding:12px;border-radius:8px;min-height:80px"></pre>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const out = document.getElementById('out');
+    const webhook = document.getElementById('webhook');
+    document.getElementById('sendBtn').addEventListener('click', async () => {
+      out.textContent = '';
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) { out.textContent = 'Select a file first'; return; }
+
+      try {
+        const fd = new FormData();
+        // Append the raw File object under key 'image'
+        fd.append('image', f, f.name);
+
+        // Do NOT set Content-Type header. Let the browser set multipart boundary.
+        const resp = await fetch(webhook.value, {
+          method: 'POST',
+          body: fd,
+        });
+
+        const text = await resp.text();
+        out.textContent = `HTTP ${resp.status} ${resp.statusText}\n\n${text}`;
+      } catch (err) {
+        out.textContent = 'Error: ' + String(err);
+      }
+    });
+  </script>
+</body>
+</html>

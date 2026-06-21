@@ -63,8 +63,10 @@ export default function CitizenPage() {
       return;
     }
 
+    const file = fileRef.current.files[0];
     const formData = new FormData();
-    formData.append("photo", fileRef.current.files[0]);
+    // Append raw File under key 'image' per n8n expectation
+    formData.append("image", file, file.name);
     formData.append("latitude", lat);
     formData.append("longitude", lng);
 
@@ -79,8 +81,30 @@ export default function CitizenPage() {
     });
 
     try {
-      const res = await fetch("/submit", { method: "POST", body: formData });
-      const data: SubmitResponse = await res.json();
+      const webhookUrl = "https://aishowcase.app.n8n.cloud/webhook/image";
+      const res = await fetch(webhookUrl, { method: "POST", body: formData });
+
+      // Attempt to parse JSON response; handle empty or non-JSON bodies
+      let raw: any = null;
+      try {
+        raw = await res.json();
+      } catch (e) {
+        const txt = await res.text();
+        if (!txt) raw = [{ success: true, damage_detected: false }];
+        else raw = [{ success: true, damage_detected: false, description: txt }];
+      }
+      const webhookResp = Array.isArray(raw) ? raw[0] : raw;
+
+      const data: SubmitResponse = {
+        success: webhookResp?.success ?? true,
+        damage_type: webhookResp?.damage_type,
+        confidence: webhookResp?.confidence ? (webhookResp.confidence > 1 ? webhookResp.confidence / 100 : webhookResp.confidence) : undefined,
+        severity: webhookResp?.severity,
+        result_image: webhookResp?.result_image ?? undefined,
+        detected: webhookResp?.damage_detected ?? undefined,
+        timestamp: webhookResp?.timestamp ?? undefined,
+        error: webhookResp?.error ?? undefined,
+      };
       Swal.close();
 
       if (data.success) {
