@@ -124,9 +124,11 @@ def call_external_webhook(image_path: str | None = None, public_url: str | None 
     try:
         if image_path:
             logging.info("Calling webhook with binary file: %s", image_path)
+            # Read file bytes first, then pass them separately so they're not closed before the request
             with open(image_path, "rb") as fh:
-                files = {"image": fh}
-                resp = session.post(url, files=files, timeout=30)
+                file_bytes = fh.read()
+            files = {"image": ("image.jpg", file_bytes, "image/jpeg")}
+            resp = session.post(url, files=files, timeout=30)
         else:
             logging.error("No image_path provided to call_external_webhook")
             return None
