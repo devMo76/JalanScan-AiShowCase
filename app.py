@@ -115,22 +115,20 @@ with app.app_context():
 
 def call_external_webhook(image_path: str | None = None, public_url: str | None = None):
     """Call the external n8n webhook.
-    Prefer sending a public URL (form field 'image') when `public_url` is provided.
-    Otherwise, send the binary file at `image_path` as before."""
+    Always send the binary file (not public URL) to n8n webhook so it receives proper multipart/form-data.
+    public_url is stored separately for reference/storage purposes."""
     url = "https://aishowcase.app.n8n.cloud/webhook/image"
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[502,503,504])
     session.mount("https://", HTTPAdapter(max_retries=retries))
     try:
-        if public_url:
-            logging.info("Calling webhook with public URL: %s", public_url)
-            resp = session.post(url, data={"image": public_url}, timeout=30)
-        elif image_path:
+        if image_path:
+            logging.info("Calling webhook with binary file: %s", image_path)
             with open(image_path, "rb") as fh:
                 files = {"image": fh}
                 resp = session.post(url, files=files, timeout=30)
         else:
-            logging.error("No image_path or public_url provided to call_external_webhook")
+            logging.error("No image_path provided to call_external_webhook")
             return None
 
         try:
@@ -235,15 +233,15 @@ def submit():
         upload_path = os.path.join("static", "uploads", unique_name).replace("\\", "/")
         photo.save(upload_path)
 
-        # Upload the saved image to a public host and send that URL to n8n
+        # Upload the saved image to a public host for storage (separate from webhook processing)
         public_url = upload_to_0x0(upload_path)
         if public_url:
-            logging.info("Using public URL for webhook: %s", public_url)
+            logging.info("Public URL obtained for storage: %s", public_url)
         else:
-            logging.warning("Public upload failed; webhook will receive binary file instead")
+            logging.warning("Public upload failed; no public URL available")
 
-        # Call webhook: prefer sending public URL (n8n will fetch/parse it), otherwise send binary
-        webhook_res = call_external_webhook(image_path=upload_path if not public_url else None, public_url=public_url)
+        # Call webhook: always send the binary file (not public URL) so n8n receives proper multipart/form-data
+        webhook_res = call_external_webhook(image_path=upload_path)
         if webhook_res is None or not webhook_res.get("success", True):
             logging.warning("Webhook returned no usable result; storing minimal record")
             webhook_res = {"success": True, "damage_detected": False, "damage_type": "Unknown", "confidence": 0, "severity": "Low", "description": "No webhook result", "recommended_action": "Manual review", "status": "Pending", "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
