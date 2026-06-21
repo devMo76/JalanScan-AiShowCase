@@ -8,17 +8,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 
 // ── Types ────────────────────────────────────────────────────
-export interface Report {
-  id: number;
-  image_path: string;
-  damage_type: string;
-  confidence: number;
-  severity: string;
-  latitude: number;
-  longitude: number;
-  status: string;
-  timestamp: string;
-}
+import type { Report } from "../types";
 
 interface WeeklyStat {
   date: string;
@@ -450,11 +440,11 @@ export default function DashboardPage() {
   }, [cdnReady]);
 
   // ── Phase 13: expose status updater to popup HTML ────────────
-  (window as any).jalanUpdateStatus = async (
-    id: number,
-    newStatus: string,
-    selectEl: HTMLSelectElement,
-  ) => {
+    (window as any).jalanUpdateStatus = async (
+      id: number,
+      newStatus: Report['status'],
+      selectEl: HTMLSelectElement,
+    ) => {
     try {
       const res = await fetch(`/api/report/${id}/status`, {
         method: "PATCH",

@@ -54,6 +54,15 @@ export default function Navbar({ page }: Props) {
             <span className="hidden sm:inline">Citizen Page</span>
           </Link>
         )}
+        {page === "dashboard" && (
+          <Link
+            to="/admin"
+            className="text-slate-400 hover:text-white text-sm flex items-center gap-2 transition-colors"
+          >
+            <i className="fas fa-tools"></i>
+            <span className="hidden sm:inline">Admin</span>
+          </Link>
+        )}
       </div>
     </nav>
   );
