@@ -16,11 +16,19 @@ export default function CitizenPage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   // ── File select ──────────────────────────────────────────────
+  // Use object URL for preview to avoid base64 strings being used in requests
   function handleFile(file: File) {
-    const reader = new FileReader();
-    reader.onload = (e) => setPreview(e.target?.result as string);
-    reader.readAsDataURL(file);
-    setFileName(file.name);
+    try {
+      const url = URL.createObjectURL(file);
+      setPreview(url);
+      setFileName(file.name);
+    } catch (e) {
+      // fallback to FileReader only for preview if createObjectURL fails
+      const reader = new FileReader();
+      reader.onload = (ev) => setPreview(ev.target?.result as string);
+      reader.readAsDataURL(file);
+      setFileName(file.name);
+    }
   }
 
   // ── GPS ──────────────────────────────────────────────────────
@@ -72,7 +80,8 @@ export default function CitizenPage() {
     }
 
     const formData = new FormData();
-    // Send raw file as 'photo' - backend will proxy to n8n
+    // Send raw file as 'photo' (backend expects 'photo' and will forward to n8n as 'image')
+    // Important: do NOT set Content-Type header; let the browser set multipart boundary.
     formData.append("photo", file, file.name);
     formData.append("latitude", lat);
     formData.append("longitude", lng);
@@ -88,8 +97,8 @@ export default function CitizenPage() {
     });
 
     try {
-      // Proxy approach: send directly to our Flask backend; backend will forward to n8n
-      const backendRes = await fetch("http://127.0.0.1:5000/submit", { method: "POST", body: formData });
+      // Proxy approach: send to our Flask backend at relative path; backend will forward to n8n
+      const backendRes = await fetch("/submit", { method: "POST", body: formData });
       const backendJson = await backendRes.json();
 
       const data: SubmitResponse = backendJson;
@@ -132,6 +141,9 @@ export default function CitizenPage() {
 
   // ── Reset ────────────────────────────────────────────────────
   function resetForm() {
+    if (preview && preview.startsWith("blob:")) {
+      try { URL.revokeObjectURL(preview); } catch {}
+    }
     setPreview(null);
     setFileName("");
     setLat("");
