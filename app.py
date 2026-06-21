@@ -25,6 +25,11 @@ except Exception:
 import logging
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+try:
+    from PIL import Image
+    pil_available = True
+except Exception:
+    pil_available = False
 
 app = Flask(__name__)
 if cors_available:
@@ -83,7 +88,8 @@ def init_db():
             status      TEXT    NOT NULL DEFAULT 'Pending',
             timestamp   TEXT    NOT NULL,
             description TEXT,
-            recommended_action TEXT
+            recommended_action TEXT,
+            thumbnail_path TEXT
         )
     """)
     # Add new columns if the table existed before without them
@@ -93,6 +99,8 @@ def init_db():
         conn.execute("ALTER TABLE reports ADD COLUMN description TEXT")
     if "recommended_action" not in cols:
         conn.execute("ALTER TABLE reports ADD COLUMN recommended_action TEXT")
+    if "thumbnail_path" not in cols:
+        conn.execute("ALTER TABLE reports ADD COLUMN thumbnail_path TEXT")
     conn.commit()
     conn.close()
     print("✅ Database ready — reports table OK")
@@ -239,11 +247,24 @@ def submit():
                         logging.exception("Failed to download result_image from webhook URL")
             except Exception:
                 logging.exception("Failed to process result_image field from webhook")
+        # Create thumbnail for the saved upload/result image if Pillow present
+        thumbnail_path = None
+        try:
+            if pil_available:
+                base_img_path = upload_path
+                im = Image.open(base_img_path)
+                im.thumbnail((480, 360))
+                thumb_name = f"thumb_{uuid.uuid4().hex[:8]}.jpg"
+                thumb_abs = os.path.join("static", "results", thumb_name)
+                im.save(thumb_abs, format="JPEG", quality=80)
+                thumbnail_path = thumb_abs.replace("\\", "/")
+        except Exception:
+            logging.exception("Failed to create thumbnail")
 
         conn = get_db()
         conn.execute("""
-            INSERT INTO reports (image_path, damage_type, confidence, severity, latitude, longitude, status, timestamp, description, recommended_action)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO reports (image_path, damage_type, confidence, severity, latitude, longitude, status, timestamp, description, recommended_action, thumbnail_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             upload_path,
             damage_type,
@@ -255,6 +276,7 @@ def submit():
             timestamp_val,
             description,
             recommended_action,
+            thumbnail_path,
         ))
         conn.commit()
         conn.close()

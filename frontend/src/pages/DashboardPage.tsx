@@ -250,13 +250,12 @@ export default function DashboardPage() {
       heatData.push([r.latitude, r.longitude, intensity]);
 
       const confidencePct = `${Math.round(r.confidence * 100)}%`;
-      const imgUrl = r.image_path.startsWith("/")
-        ? r.image_path
-        : `/${r.image_path}`;
+      const imgUrl = (r.thumbnail_path || r.image_path);
+      const imgSrc = imgUrl && imgUrl.startsWith("/") ? imgUrl : `/${imgUrl}`;
 
       const popupHtml = `
-  <div class="jalanscan-popup" style="min-width:200px;max-width:240px;font-family:'Poppins',sans-serif;">
-    <img src="${imgUrl}" alt="Damage photo" onerror="this.style.display='none'" />
+    <div class="jalanscan-popup" style="min-width:200px;max-width:240px;font-family:'Poppins',sans-serif;">
+      <img src="${imgSrc}" alt="Damage photo" onerror="this.style.display='none'" />
     <p style="font-size:13px;font-weight:700;color:#f1f5f9;margin:0 0 4px 0;">${r.damage_type}</p>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
       <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:${color}22;color:${color};border:1px solid ${color}55;font-weight:600;">${r.severity}</span>
