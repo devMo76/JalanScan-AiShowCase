@@ -88,8 +88,35 @@ def call_external_webhook(image_path: str):
         with open(image_path, "rb") as fh:
             files = {"image": fh}
             resp = requests.post(url, files=files, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        # If webhook returns non-JSON or empty body, handle gracefully
+        try:
+            resp.raise_for_status()
+        except Exception as e:
+            print(f"Webhook HTTP error: {e} (status {getattr(resp, 'status_code', 'N/A')})")
+            return None
+
+        body = resp.text
+        if not body:
+            print(f"Webhook returned empty body (status {resp.status_code}) - using fallback response")
+            return {
+                "success": True,
+                "damage_detected": False,
+                "damage_type": "Unknown",
+                "severity": "Low",
+                "confidence": 0,
+                "description": "No response from webhook; fallback used.",
+                "recommended_action": "Manual review",
+                "status": "Pending",
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            }
+
+        try:
+            data = resp.json()
+        except Exception as e:
+            print("Webhook JSON parse failed:", e)
+            print("Response body (truncated):", body[:1000])
+            return None
+
         if not isinstance(data, list) or len(data) == 0:
             return None
         return data[0]
