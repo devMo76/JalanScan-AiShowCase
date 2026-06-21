@@ -16,17 +16,13 @@ import sqlite3
 import io
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request, Response
-from ultralytics import YOLO
-import cv2
+import requests
 
 app = Flask(__name__)
 
 MODEL_PATH = os.path.join("model", "road_damage.pt")
 
-print("🔄 Loading YOLOv8 road damage model...")
-model = YOLO(MODEL_PATH)
-print(f"✅ Model loaded successfully from: {MODEL_PATH}")
-print(f"   Classes: {model.names}")
+print("🔄 Using external AI webhook for detection: https://aishowcase.app.n8n.cloud/webhook/image")
 
 DATABASE = "database.db"
 
@@ -65,9 +61,18 @@ def init_db():
             latitude    REAL    NOT NULL,
             longitude   REAL    NOT NULL,
             status      TEXT    NOT NULL DEFAULT 'Pending',
-            timestamp   TEXT    NOT NULL
+            timestamp   TEXT    NOT NULL,
+            description TEXT,
+            recommended_action TEXT
         )
     """)
+    # Add new columns if the table existed before without them
+    cur = conn.execute("PRAGMA table_info(reports)").fetchall()
+    cols = {r[1] for r in cur}
+    if "description" not in cols:
+        conn.execute("ALTER TABLE reports ADD COLUMN description TEXT")
+    if "recommended_action" not in cols:
+        conn.execute("ALTER TABLE reports ADD COLUMN recommended_action TEXT")
     conn.commit()
     conn.close()
     print("✅ Database ready — reports table OK")
@@ -77,77 +82,20 @@ with app.app_context():
     init_db()
 
 
-def detect_damage(image_path):
-    img = cv2.imread(image_path)
-    if img is None:
+def call_external_webhook(image_path: str):
+    url = "https://aishowcase.app.n8n.cloud/webhook/image"
+    try:
+        with open(image_path, "rb") as fh:
+            files = {"image": fh}
+            resp = requests.post(url, files=files, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, list) or len(data) == 0:
+            return None
+        return data[0]
+    except Exception as e:
+        print("Webhook call failed:", e)
         return None
-
-    results = model(image_path, verbose=False)
-    boxes = results[0].boxes
-
-    if boxes is None or len(boxes) == 0:
-        filename = f"no_damage_{uuid.uuid4().hex[:8]}.jpg"
-        result_abs_path = os.path.join("static", "results", filename)
-        cv2.imwrite(result_abs_path, img)
-        return {
-            "damage_type": "No Damage Detected",
-            "confidence": 0.0,
-            "severity": "Low",
-            "result_image_path": f"static/results/{filename}",
-            "detected": False,
-        }
-
-    confidences = boxes.conf.tolist()
-    classes = boxes.cls.tolist()
-    xyxy = boxes.xyxy.tolist()
-
-    best_idx = confidences.index(max(confidences))
-    best_conf = round(confidences[best_idx], 4)
-    best_cls = int(classes[best_idx])
-    damage_type = CLASS_LABEL_MAP.get(best_cls, f"Road Damage (Class {best_cls})")
-
-    if best_conf > 0.7:
-        severity = "High"
-    elif best_conf > 0.4:
-        severity = "Medium"
-    else:
-        severity = "Low"
-
-    for conf, cls, box in zip(confidences, classes, xyxy):
-        if conf < 0.5:
-            continue
-        x1, y1, x2, y2 = map(int, box)
-        c = int(cls)
-        if conf > 0.7:
-            box_colour = SEVERITY_COLOURS["High"]
-        elif conf > 0.4:
-            box_colour = SEVERITY_COLOURS["Medium"]
-        else:
-            box_colour = SEVERITY_COLOURS["Low"]
-
-        label_text = CLASS_LABEL_MAP.get(c, f"Class {c}")
-        label = f"{label_text} {conf:.0%}"
-
-        (text_w, text_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-        cv2.rectangle(img, (x1, y1 - text_h - baseline - 4), (x1 + text_w, y1), box_colour, -1)
-        cv2.rectangle(img, (x1, y1), (x2, y2), box_colour, 3)
-        cv2.putText(img, label, (x1, y1 - baseline - 2),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-
-    cv2.putText(img, "JalanScan Ai", (10, img.shape[0] - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-
-    filename = f"result_{uuid.uuid4().hex[:8]}.jpg"
-    result_abs_path = os.path.join("static", "results", filename)
-    cv2.imwrite(result_abs_path, img)
-
-    return {
-        "damage_type": damage_type,
-        "confidence": best_conf,
-        "severity": severity,
-        "result_image_path": f"static/results/{filename}",
-        "detected": True,
-    }
 
 
 # ── Routes ───────────────────────────────────────────────────
@@ -181,32 +129,53 @@ def submit():
         upload_path = os.path.join("static", "uploads", unique_name).replace("\\", "/")
         photo.save(upload_path)
 
-        result = detect_damage(upload_path)
-        if result is None:
-            return jsonify({"success": False, "error": "Could not read image"}), 500
+        # Call external AI webhook
+        webhook_res = call_external_webhook(upload_path)
+        if webhook_res is None or not webhook_res.get("success", False):
+            return jsonify({"success": False, "error": "AI webhook failed or returned no result"}), 500
+
+        # Map webhook response to DB fields
+        damage_type = webhook_res.get("damage_type", "Unknown")
+        raw_conf = webhook_res.get("confidence", 0)
+        try:
+            confidence = float(raw_conf)
+            if confidence > 1:
+                confidence = confidence / 100.0
+        except Exception:
+            confidence = 0.0
+        severity = webhook_res.get("severity", "Low")
+        description = webhook_res.get("description", "")
+        recommended_action = webhook_res.get("recommended_action", "")
+        status_val = webhook_res.get("status", "Pending")
+        timestamp_val = webhook_res.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         conn = get_db()
         conn.execute("""
-            INSERT INTO reports (image_path, damage_type, confidence, severity, latitude, longitude, status, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, 'Pending', ?)
+            INSERT INTO reports (image_path, damage_type, confidence, severity, latitude, longitude, status, timestamp, description, recommended_action)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            result["result_image_path"],
-            result["damage_type"],
-            result["confidence"],
-            result["severity"],
+            upload_path,
+            damage_type,
+            confidence,
+            severity,
             latitude,
             longitude,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            status_val,
+            timestamp_val,
+            description,
+            recommended_action,
         ))
         conn.commit()
         conn.close()
 
         return jsonify({
             "success": True,
-            "damage_type": result["damage_type"],
-            "confidence":  result["confidence"],
-            "severity":    result["severity"],
-            "result_image": "/" + result["result_image_path"]
+            "damage_type": damage_type,
+            "confidence":  confidence,
+            "severity":    severity,
+            "result_image": "/" + upload_path,
+            "description": description,
+            "recommended_action": recommended_action,
         })
 
     except Exception as e:
@@ -245,7 +214,7 @@ def api_stats_weekly():
 def api_export_csv():
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, damage_type, confidence, severity, latitude, longitude, status, timestamp "
+        "SELECT id, damage_type, confidence, severity, latitude, longitude, status, timestamp, description, recommended_action "
         "FROM reports ORDER BY timestamp DESC"
     ).fetchall()
     conn.close()
@@ -253,7 +222,7 @@ def api_export_csv():
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["id", "damage_type", "confidence", "severity",
-                     "latitude", "longitude", "status", "timestamp"])
+                     "latitude", "longitude", "status", "timestamp", "description", "recommended_action"])
     for row in rows:
         writer.writerow([
             row["id"],
@@ -264,6 +233,8 @@ def api_export_csv():
             row["longitude"],
             row["status"],
             row["timestamp"],
+            row["description"],
+            row["recommended_action"],
         ])
 
     output.seek(0)
@@ -297,9 +268,9 @@ def test_detect():
     img_path = request.args.get("img", "")
     if not img_path or not os.path.exists(img_path):
         return jsonify({"error": f"File not found: {img_path}"}), 400
-    result = detect_damage(img_path)
+    result = call_external_webhook(img_path)
     if result is None:
-        return jsonify({"error": "Could not read image"}), 500
+        return jsonify({"error": "Webhook returned no result or failed"}), 500
     return jsonify(result)
 
 
