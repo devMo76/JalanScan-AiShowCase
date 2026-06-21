@@ -80,6 +80,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS reports (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             image_path  TEXT    NOT NULL,
+            public_url  TEXT,
             damage_type TEXT    NOT NULL,
             confidence  REAL    NOT NULL,
             severity    TEXT    NOT NULL,
@@ -101,6 +102,8 @@ def init_db():
         conn.execute("ALTER TABLE reports ADD COLUMN recommended_action TEXT")
     if "thumbnail_path" not in cols:
         conn.execute("ALTER TABLE reports ADD COLUMN thumbnail_path TEXT")
+    if "public_url" not in cols:
+        conn.execute("ALTER TABLE reports ADD COLUMN public_url TEXT")
     conn.commit()
     conn.close()
     print("✅ Database ready — reports table OK")
@@ -154,6 +157,23 @@ def call_external_webhook(image_path: str):
     except Exception as e:
         logging.exception("Webhook call failed: %s", e)
         return None
+
+
+def upload_to_0x0(file_path: str) -> str | None:
+    """Upload a file to 0x0.st (anonymous) and return the public URL on success.
+    Falls back to None on any failure."""
+    try:
+        with open(file_path, "rb") as fh:
+            r = requests.post("https://0x0.st", files={"file": fh}, timeout=30)
+        if r.status_code == 200:
+            url = r.text.strip()
+            # 0x0.st returns plain URL text
+            if url.startswith("http"):
+                return url
+        logging.warning("0x0.st upload failed: status=%s body=%s", r.status_code, r.text[:200])
+    except Exception:
+        logging.exception("Public upload to 0x0.st failed")
+    return None
 
 
 # ── Routes ───────────────────────────────────────────────────
@@ -270,12 +290,23 @@ def submit():
         except Exception:
             logging.exception("Failed to create thumbnail")
 
+        # Attempt to upload the saved image to a public anonymous host and store URL
+        public_url = None
+        try:
+            # prefer annotated/result image if upload_path was replaced earlier
+            public_url = upload_to_0x0(upload_path)
+            if public_url:
+                logging.info("Uploaded image to public host: %s", public_url)
+        except Exception:
+            logging.exception("Public upload failed")
+
         conn = get_db()
         conn.execute("""
-            INSERT INTO reports (image_path, damage_type, confidence, severity, latitude, longitude, status, timestamp, description, recommended_action, thumbnail_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO reports (image_path, public_url, damage_type, confidence, severity, latitude, longitude, status, timestamp, description, recommended_action, thumbnail_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             upload_path,
+            public_url,
             damage_type,
             confidence,
             severity,
@@ -298,6 +329,7 @@ def submit():
             "result_image": "/" + upload_path,
             "description": description,
             "recommended_action": recommended_action,
+            "public_url": public_url,
         })
 
     except Exception as e:
@@ -344,7 +376,7 @@ def api_export_csv():
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["id", "image_path", "damage_type", "confidence", "severity",
-                     "latitude", "longitude", "status", "timestamp", "description", "recommended_action"])
+                     "latitude", "longitude", "status", "timestamp", "description", "recommended_action", "public_url"])
     for row in rows:
         writer.writerow([
             row["id"],
@@ -358,6 +390,7 @@ def api_export_csv():
             row["timestamp"],
             row["description"],
             row["recommended_action"],
+            row.get("public_url") if isinstance(row, dict) else row["public_url"],
         ])
 
     output.seek(0)
