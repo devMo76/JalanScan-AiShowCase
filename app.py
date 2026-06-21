@@ -180,6 +180,15 @@ def submit():
             return jsonify({"success": False, "error": "No photo uploaded"}), 400
         # --- Basic server-side validation ---
         photo = request.files["photo"]
+        # Log incoming file details for debugging
+        try:
+            logging.info("Received upload: filename=%s, content_type=%s", getattr(photo, 'filename', None), getattr(photo, 'mimetype', None))
+            photo.stream.seek(0, io.SEEK_END)
+            incoming_size = photo.stream.tell()
+            photo.stream.seek(0)
+            logging.info("Incoming file size: %s bytes", incoming_size)
+        except Exception:
+            logging.exception("Failed to log incoming file info")
         if not photo.mimetype.startswith("image/"):
             return jsonify({"success": False, "error": "Uploaded file is not an image"}), 400
         photo.stream.seek(0, io.SEEK_END)

@@ -79,6 +79,7 @@ export default function CitizenPage() {
       return;
     }
 
+    console.log('Preparing to upload file:', file, 'size:', file.size, 'type:', file.type);
     const formData = new FormData();
     // Send raw file as 'photo' (backend expects 'photo' and will forward to n8n as 'image')
     // Important: do NOT set Content-Type header; let the browser set multipart boundary.
