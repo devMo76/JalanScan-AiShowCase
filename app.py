@@ -22,6 +22,9 @@ try:
     cors_available = True
 except Exception:
     cors_available = False
+import logging
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 app = Flask(__name__)
 if cors_available:
@@ -101,20 +104,23 @@ with app.app_context():
 
 def call_external_webhook(image_path: str):
     url = "https://aishowcase.app.n8n.cloud/webhook/image"
+    # create session with retries
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[502,503,504])
+    session.mount("https://", HTTPAdapter(max_retries=retries))
     try:
         with open(image_path, "rb") as fh:
             files = {"image": fh}
-            resp = requests.post(url, files=files, timeout=30)
-        # If webhook returns non-JSON or empty body, handle gracefully
+            resp = session.post(url, files=files, timeout=30)
         try:
             resp.raise_for_status()
         except Exception as e:
-            print(f"Webhook HTTP error: {e} (status {getattr(resp, 'status_code', 'N/A')})")
+            logging.error("Webhook HTTP error: %s status=%s", e, getattr(resp, 'status_code', 'N/A'))
             return None
 
         body = resp.text
         if not body:
-            print(f"Webhook returned empty body (status {resp.status_code}) - using fallback response")
+            logging.warning("Webhook returned empty body (status %s)", resp.status_code)
             return {
                 "success": True,
                 "damage_detected": False,
@@ -130,15 +136,15 @@ def call_external_webhook(image_path: str):
         try:
             data = resp.json()
         except Exception as e:
-            print("Webhook JSON parse failed:", e)
-            print("Response body (truncated):", body[:1000])
+            logging.error("Webhook JSON parse failed: %s", e)
+            logging.debug("Response body: %s", body[:2000])
             return None
 
         if not isinstance(data, list) or len(data) == 0:
             return None
         return data[0]
     except Exception as e:
-        print("Webhook call failed:", e)
+        logging.exception("Webhook call failed: %s", e)
         return None
 
 
@@ -164,48 +170,43 @@ def submit():
     try:
         if "photo" not in request.files:
             return jsonify({"success": False, "error": "No photo uploaded"}), 400
-
+        # --- Basic server-side validation ---
         photo = request.files["photo"]
-        latitude  = float(request.form.get("latitude",  3.1390))
+        if not photo.mimetype.startswith("image/"):
+            return jsonify({"success": False, "error": "Uploaded file is not an image"}), 400
+        photo.stream.seek(0, io.SEEK_END)
+        size = photo.stream.tell()
+        photo.stream.seek(0)
+        MAX_SIZE = 10 * 1024 * 1024
+        if size > MAX_SIZE:
+            return jsonify({"success": False, "error": "File too large (max 10MB)"}), 400
+
+        latitude = float(request.form.get("latitude", 3.1390))
         longitude = float(request.form.get("longitude", 101.6869))
 
         unique_name = f"upload_{uuid.uuid4().hex[:10]}.jpg"
         upload_path = os.path.join("static", "uploads", unique_name).replace("\\", "/")
         photo.save(upload_path)
 
-        # If the frontend already called the webhook and provided detection fields,
-        # use those fields instead of calling the webhook again.
-        if request.form.get("damage_type"):
-            damage_type = request.form.get("damage_type")
-            try:
-                confidence = float(request.form.get("confidence", 0))
-                if confidence > 1:
-                    confidence = confidence / 100.0
-            except Exception:
-                confidence = 0.0
-            severity = request.form.get("severity", "Low")
-            description = request.form.get("description", "")
-            recommended_action = request.form.get("recommended_action", "")
-            status_val = request.form.get("status", "Pending")
-            timestamp_val = request.form.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        else:
-            # Call external AI webhook (server-side fallback)
-            webhook_res = call_external_webhook(upload_path)
-            if webhook_res is None or not webhook_res.get("success", False):
-                return jsonify({"success": False, "error": "AI webhook failed or returned no result"}), 500
-            damage_type = webhook_res.get("damage_type", "Unknown")
-            raw_conf = webhook_res.get("confidence", 0)
-            try:
-                confidence = float(raw_conf)
-                if confidence > 1:
-                    confidence = confidence / 100.0
-            except Exception:
-                confidence = 0.0
-            severity = webhook_res.get("severity", "Low")
-            description = webhook_res.get("description", "")
-            recommended_action = webhook_res.get("recommended_action", "")
-            status_val = webhook_res.get("status", "Pending")
-            timestamp_val = webhook_res.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        # Proxy: call n8n webhook with the uploaded file
+        webhook_res = call_external_webhook(upload_path)
+        if webhook_res is None or not webhook_res.get("success", True):
+            logging.warning("Webhook returned no usable result; storing minimal record")
+            webhook_res = {"success": True, "damage_detected": False, "damage_type": "Unknown", "confidence": 0, "severity": "Low", "description": "No webhook result", "recommended_action": "Manual review", "status": "Pending", "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+        damage_type = webhook_res.get("damage_type", "Unknown")
+        raw_conf = webhook_res.get("confidence", 0)
+        try:
+            confidence = float(raw_conf)
+            if confidence > 1:
+                confidence = confidence / 100.0
+        except Exception:
+            confidence = 0.0
+        severity = webhook_res.get("severity", "Low")
+        description = webhook_res.get("description", "")
+        recommended_action = webhook_res.get("recommended_action", "")
+        status_val = webhook_res.get("status", "Pending")
+        timestamp_val = webhook_res.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         conn = get_db()
         conn.execute("""
@@ -229,8 +230,8 @@ def submit():
         return jsonify({
             "success": True,
             "damage_type": damage_type,
-            "confidence":  confidence,
-            "severity":    severity,
+            "confidence": confidence,
+            "severity": severity,
             "result_image": "/" + upload_path,
             "description": description,
             "recommended_action": recommended_action,

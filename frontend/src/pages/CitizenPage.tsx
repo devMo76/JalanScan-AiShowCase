@@ -64,9 +64,16 @@ export default function CitizenPage() {
     }
 
     const file = fileRef.current.files[0];
+    // Client-side validation
+    const MAX_BYTES = 10 * 1024 * 1024;
+    if (file.size > MAX_BYTES) {
+      setValidation("File too large (max 10MB)");
+      return;
+    }
+
     const formData = new FormData();
-    // Append raw File under key 'image' per n8n expectation
-    formData.append("image", file, file.name);
+    // Send raw file as 'photo' - backend will proxy to n8n
+    formData.append("photo", file, file.name);
     formData.append("latitude", lat);
     formData.append("longitude", lng);
 
@@ -81,35 +88,8 @@ export default function CitizenPage() {
     });
 
     try {
-      const webhookUrl = "https://aishowcase.app.n8n.cloud/webhook/image";
-      const res = await fetch(webhookUrl, { method: "POST", body: formData });
-
-      // Parse webhook response (n8n usually returns an array)
-      let raw: any = null;
-      try {
-        raw = await res.json();
-      } catch {
-        const txt = await res.text();
-        raw = txt ? [{ success: true, damage_detected: false, description: txt }] : [{ success: true, damage_detected: false }];
-      }
-      const webhookResp = Array.isArray(raw) ? raw[0] : raw;
-
-      // Forward file + webhook fields to backend to store in DB and keep the map in sync
-      const storeForm = new FormData();
-      storeForm.append("photo", file, file.name);
-      storeForm.append("latitude", lat);
-      storeForm.append("longitude", lng);
-      if (webhookResp) {
-        if (webhookResp.damage_type) storeForm.append("damage_type", webhookResp.damage_type);
-        if (webhookResp.confidence !== undefined) storeForm.append("confidence", String(webhookResp.confidence));
-        if (webhookResp.severity) storeForm.append("severity", webhookResp.severity);
-        if (webhookResp.description) storeForm.append("description", webhookResp.description);
-        if (webhookResp.recommended_action) storeForm.append("recommended_action", webhookResp.recommended_action);
-        if (webhookResp.status) storeForm.append("status", webhookResp.status);
-        if (webhookResp.timestamp) storeForm.append("timestamp", webhookResp.timestamp);
-      }
-
-      const backendRes = await fetch("http://127.0.0.1:5000/submit", { method: "POST", body: storeForm });
+      // Proxy approach: send directly to our Flask backend; backend will forward to n8n
+      const backendRes = await fetch("http://127.0.0.1:5000/submit", { method: "POST", body: formData });
       const backendJson = await backendRes.json();
 
       const data: SubmitResponse = backendJson;
