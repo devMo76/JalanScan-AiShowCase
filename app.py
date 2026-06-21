@@ -208,6 +208,38 @@ def submit():
         status_val = webhook_res.get("status", "Pending")
         timestamp_val = webhook_res.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
+        # If webhook provides an annotated/result image (URL or data URI), try to fetch and save it
+        result_image_field = webhook_res.get("result_image") or webhook_res.get("annotated_image")
+        if result_image_field:
+            try:
+                if isinstance(result_image_field, str) and result_image_field.startswith("data:image"):
+                    header, b64 = result_image_field.split(",", 1)
+                    import base64
+                    data_bytes = base64.b64decode(b64)
+                    filename = f"result_{uuid.uuid4().hex[:8]}.jpg"
+                    result_abs_path = os.path.join("static", "results", filename)
+                    with open(result_abs_path, "wb") as outfh:
+                        outfh.write(data_bytes)
+                    # replace image path to point to annotated result
+                    upload_path = result_abs_path.replace("\\", "/")
+                elif isinstance(result_image_field, str) and result_image_field.startswith("http"):
+                    # fetch the image
+                    try:
+                        rimg = requests.get(result_image_field, timeout=15)
+                        rimg.raise_for_status()
+                        # ensure content-type is image
+                        ctype = rimg.headers.get("Content-Type", "")
+                        if "image" in ctype:
+                            filename = f"result_{uuid.uuid4().hex[:8]}.jpg"
+                            result_abs_path = os.path.join("static", "results", filename)
+                            with open(result_abs_path, "wb") as outfh:
+                                outfh.write(rimg.content)
+                            upload_path = result_abs_path.replace("\\", "/")
+                    except Exception:
+                        logging.exception("Failed to download result_image from webhook URL")
+            except Exception:
+                logging.exception("Failed to process result_image field from webhook")
+
         conn = get_db()
         conn.execute("""
             INSERT INTO reports (image_path, damage_type, confidence, severity, latitude, longitude, status, timestamp, description, recommended_action)
@@ -273,18 +305,19 @@ def api_stats_weekly():
 def api_export_csv():
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, damage_type, confidence, severity, latitude, longitude, status, timestamp, description, recommended_action "
+        "SELECT id, image_path, damage_type, confidence, severity, latitude, longitude, status, timestamp, description, recommended_action "
         "FROM reports ORDER BY timestamp DESC"
     ).fetchall()
     conn.close()
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "damage_type", "confidence", "severity",
+    writer.writerow(["id", "image_path", "damage_type", "confidence", "severity",
                      "latitude", "longitude", "status", "timestamp", "description", "recommended_action"])
     for row in rows:
         writer.writerow([
             row["id"],
+            row["image_path"],
             row["damage_type"],
             round(row["confidence"], 4),
             row["severity"],

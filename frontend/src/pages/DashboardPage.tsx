@@ -238,12 +238,13 @@ export default function DashboardPage() {
     const heatData: [number, number, number][] = [];
 
     reports.forEach((r) => {
-      const color =
-        r.status === "Fixed"
-          ? "#6b7280"
-          : r.status === "In Progress"
-            ? "#60a5fa"
-            : (SEVERITY_COLOR[r.severity] ?? "#94a3b8");
+      // Highlight urgent recommended actions
+      let color = (SEVERITY_COLOR[r.severity] ?? "#94a3b8");
+      if (r.status === "Fixed") color = "#6b7280";
+      else if (r.status === "In Progress") color = "#60a5fa";
+      else if (r.recommended_action && String(r.recommended_action).toLowerCase().includes("urgent")) {
+        color = "#ff2d55"; // urgent highlight
+      }
       const intensity =
         r.severity === "High" ? 1.0 : r.severity === "Medium" ? 0.6 : 0.3;
       heatData.push([r.latitude, r.longitude, intensity]);
