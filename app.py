@@ -7,6 +7,7 @@
 # Phase 10: /api/stats/weekly         ✅
 # Phase 10: /api/export/csv           ✅
 # Phase 13: Status Tracking           ✅
+# Auth:     Login / Logout / Session  ✅
 # ============================================================
 
 import os
@@ -15,13 +16,19 @@ import uuid
 import sqlite3
 import io
 from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify, request, Response
+from functools import wraps
+from flask import Flask, render_template, jsonify, request, Response, session
 import requests
 try:
     from flask_cors import CORS
     cors_available = True
 except Exception:
     cors_available = False
+try:
+    from flask_bcrypt import Bcrypt
+    bcrypt_available = True
+except Exception:
+    bcrypt_available = False
 import logging
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -32,17 +39,21 @@ except Exception:
     pil_available = False
 
 app = Flask(__name__)
+app.secret_key = "jalanscan-secret-key-2026-fai-showcase"
+
 if cors_available:
-    CORS(app)
+    CORS(app, supports_credentials=True)
+
+bcrypt = Bcrypt(app) if bcrypt_available else None
 
 
 @app.after_request
 def _allow_cors(response):
-    # If flask_cors is not available, add permissive CORS headers for development
     if not cors_available:
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Origin"] = "http://localhost:5173"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,PATCH,OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
 
 MODEL_PATH = os.path.join("model", "road_damage.pt")
@@ -76,6 +87,8 @@ def get_db():
 
 def init_db():
     conn = get_db()
+
+    # ── Reports table ─────────────────────────────────────────
     conn.execute("""
         CREATE TABLE IF NOT EXISTS reports (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,31 +117,65 @@ def init_db():
         conn.execute("ALTER TABLE reports ADD COLUMN thumbnail_path TEXT")
     if "public_url" not in cols:
         conn.execute("ALTER TABLE reports ADD COLUMN public_url TEXT")
+
+    # ── Users table ───────────────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            email         TEXT    NOT NULL UNIQUE,
+            password_hash TEXT    NOT NULL,
+            name          TEXT    NOT NULL DEFAULT '',
+            role          TEXT    NOT NULL DEFAULT 'admin',
+            created_at    TEXT    NOT NULL
+        )
+    """)
+
     conn.commit()
+
+    # Seed a default admin account if no users exist yet
+    existing = conn.execute("SELECT COUNT(*) as cnt FROM users").fetchone()
+    if existing["cnt"] == 0 and bcrypt:
+        default_email = "admin@jalanscan.ai"
+        default_password = "jalanscan2026"
+        hashed = bcrypt.generate_password_hash(default_password).decode("utf-8")
+        conn.execute(
+            "INSERT INTO users (email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?)",
+            (default_email, hashed, "Admin", "admin", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        conn.commit()
+        print(f"✅ Default admin created → email: {default_email} | password: {default_password}")
+
     conn.close()
-    print("✅ Database ready — reports table OK")
+    print("✅ Database ready — reports + users tables OK")
 
 
 with app.app_context():
     init_db()
 
 
+# ── Auth decorator ────────────────────────────────────────────
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if "user_id" not in session:
+            return jsonify({"success": False, "error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+
 def call_external_webhook(image_path: str | None = None, public_url: str | None = None):
-    """Call the external n8n webhook.
-    Always send the binary file (not public URL) to n8n webhook so it receives proper multipart/form-data.
-    public_url is stored separately for reference/storage purposes."""
+    """Call the external n8n webhook."""
     url = "https://aishowcase.app.n8n.cloud/webhook/image"
-    session = requests.Session()
+    session_req = requests.Session()
     retries = Retry(total=3, backoff_factor=1, status_forcelist=[502,503,504])
-    session.mount("https://", HTTPAdapter(max_retries=retries))
+    session_req.mount("https://", HTTPAdapter(max_retries=retries))
     try:
         if image_path:
             logging.info("Calling webhook with binary file: %s", image_path)
-            # Read file bytes first, then pass them separately so they're not closed before the request
             with open(image_path, "rb") as fh:
                 file_bytes = fh.read()
             files = {"image": ("image.jpg", file_bytes, "image/jpeg")}
-            resp = session.post(url, files=files, timeout=30)
+            resp = session_req.post(url, files=files, timeout=30)
         else:
             logging.error("No image_path provided to call_external_webhook")
             return None
@@ -170,14 +217,12 @@ def call_external_webhook(image_path: str | None = None, public_url: str | None 
 
 
 def upload_to_0x0(file_path: str) -> str | None:
-    """Upload a file to 0x0.st (anonymous) and return the public URL on success.
-    Falls back to None on any failure."""
+    """Upload a file to 0x0.st and return the public URL."""
     try:
         with open(file_path, "rb") as fh:
             r = requests.post("https://0x0.st", files={"file": fh}, timeout=30)
         if r.status_code == 200:
             url = r.text.strip()
-            # 0x0.st returns plain URL text
             if url.startswith("http"):
                 return url
         logging.warning("0x0.st upload failed: status=%s body=%s", r.status_code, r.text[:200])
@@ -186,7 +231,7 @@ def upload_to_0x0(file_path: str) -> str | None:
     return None
 
 
-# ── Routes ───────────────────────────────────────────────────
+# ── Public routes (no login required) ────────────────────────
 
 @app.route("/")
 def citizen():
@@ -203,14 +248,117 @@ def health():
     return jsonify({"status": "ok", "model": "loaded"})
 
 
+# ── Auth routes ───────────────────────────────────────────────
+
+@app.route("/api/auth/login", methods=["POST", "OPTIONS"])
+def auth_login():
+    if request.method == "OPTIONS":
+        return "", 204
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "error": "No data provided"}), 400
+
+    email = data.get("email", "").strip().lower()
+    password = data.get("password", "")
+
+    if not email or not password:
+        return jsonify({"success": False, "error": "Email and password are required"}), 400
+
+    conn = get_db()
+    user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    conn.close()
+
+    if not user:
+        return jsonify({"success": False, "error": "Invalid email or password"}), 401
+
+    if bcrypt and bcrypt.check_password_hash(user["password_hash"], password):
+        session["user_id"] = user["id"]
+        session["user_email"] = user["email"]
+        session["user_name"] = user["name"]
+        session["user_role"] = user["role"]
+        return jsonify({
+            "success": True,
+            "user": {
+                "id": user["id"],
+                "email": user["email"],
+                "name": user["name"],
+                "role": user["role"],
+            }
+        })
+    else:
+        return jsonify({"success": False, "error": "Invalid email or password"}), 401
+
+
+@app.route("/api/auth/logout", methods=["POST", "OPTIONS"])
+def auth_logout():
+    if request.method == "OPTIONS":
+        return "", 204
+    session.clear()
+    return jsonify({"success": True})
+
+
+@app.route("/api/auth/me", methods=["GET"])
+def auth_me():
+    if "user_id" not in session:
+        return jsonify({"success": False, "error": "Not logged in"}), 401
+    return jsonify({
+        "success": True,
+        "user": {
+            "id": session["user_id"],
+            "email": session["user_email"],
+            "name": session["user_name"],
+            "role": session["user_role"],
+        }
+    })
+
+
+@app.route("/api/auth/register", methods=["POST", "OPTIONS"])
+def auth_register():
+    if request.method == "OPTIONS":
+        return "", 204
+    # Only allow registration if already logged in as admin
+    if "user_id" not in session or session.get("user_role") != "admin":
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "error": "No data provided"}), 400
+
+    email = data.get("email", "").strip().lower()
+    password = data.get("password", "")
+    name = data.get("name", "").strip()
+
+    if not email or not password or not name:
+        return jsonify({"success": False, "error": "Name, email and password are required"}), 400
+    if len(password) < 6:
+        return jsonify({"success": False, "error": "Password must be at least 6 characters"}), 400
+
+    if not bcrypt:
+        return jsonify({"success": False, "error": "Bcrypt not available"}), 500
+
+    hashed = bcrypt.generate_password_hash(password).decode("utf-8")
+    try:
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO users (email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?)",
+            (email, hashed, name, "admin", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": f"Account created for {email}"})
+    except sqlite3.IntegrityError:
+        return jsonify({"success": False, "error": "Email already exists"}), 409
+
+
+# ── Protected API routes ──────────────────────────────────────
+
 @app.route("/submit", methods=["POST"])
 def submit():
+    # /submit is public — citizens don't need to log in to report damage
     try:
         if "photo" not in request.files:
             return jsonify({"success": False, "error": "No photo uploaded"}), 400
-        # --- Basic server-side validation ---
         photo = request.files["photo"]
-        # Log incoming file details for debugging
         try:
             logging.info("Received upload: filename=%s, content_type=%s", getattr(photo, 'filename', None), getattr(photo, 'mimetype', None))
             photo.stream.seek(0, io.SEEK_END)
@@ -235,14 +383,12 @@ def submit():
         upload_path = os.path.join("static", "uploads", unique_name).replace("\\", "/")
         photo.save(upload_path)
 
-        # Upload the saved image to a public host for storage (separate from webhook processing)
         public_url = upload_to_0x0(upload_path)
         if public_url:
             logging.info("Public URL obtained for storage: %s", public_url)
         else:
             logging.warning("Public upload failed; no public URL available")
 
-        # Call webhook: always send the binary file (not public URL) so n8n receives proper multipart/form-data
         webhook_res = call_external_webhook(image_path=upload_path)
         if webhook_res is None or not webhook_res.get("success", True):
             logging.warning("Webhook returned no usable result; storing minimal record")
@@ -262,7 +408,6 @@ def submit():
         status_val = webhook_res.get("status", "Pending")
         timestamp_val = webhook_res.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-        # If webhook provides an annotated/result image (URL or data URI), try to fetch and save it
         result_image_field = webhook_res.get("result_image") or webhook_res.get("annotated_image")
         if result_image_field:
             try:
@@ -274,14 +419,11 @@ def submit():
                     result_abs_path = os.path.join("static", "results", filename)
                     with open(result_abs_path, "wb") as outfh:
                         outfh.write(data_bytes)
-                    # replace image path to point to annotated result
                     upload_path = result_abs_path.replace("\\", "/")
                 elif isinstance(result_image_field, str) and result_image_field.startswith("http"):
-                    # fetch the image
                     try:
                         rimg = requests.get(result_image_field, timeout=15)
                         rimg.raise_for_status()
-                        # ensure content-type is image
                         ctype = rimg.headers.get("Content-Type", "")
                         if "image" in ctype:
                             filename = f"result_{uuid.uuid4().hex[:8]}.jpg"
@@ -293,7 +435,7 @@ def submit():
                         logging.exception("Failed to download result_image from webhook URL")
             except Exception:
                 logging.exception("Failed to process result_image field from webhook")
-        # Create thumbnail for the saved upload/result image if Pillow present
+
         thumbnail_path = None
         try:
             if pil_available:
@@ -307,24 +449,14 @@ def submit():
         except Exception:
             logging.exception("Failed to create thumbnail")
 
-        # `public_url` already obtained earlier (uploaded before calling webhook)
         conn = get_db()
         conn.execute("""
             INSERT INTO reports (image_path, public_url, damage_type, confidence, severity, latitude, longitude, status, timestamp, description, recommended_action, thumbnail_path)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            upload_path,
-            public_url,
-            damage_type,
-            confidence,
-            severity,
-            latitude,
-            longitude,
-            status_val,
-            timestamp_val,
-            description,
-            recommended_action,
-            thumbnail_path,
+            upload_path, public_url, damage_type, confidence, severity,
+            latitude, longitude, status_val, timestamp_val,
+            description, recommended_action, thumbnail_path,
         ))
         conn.commit()
         conn.close()
@@ -345,6 +477,7 @@ def submit():
 
 
 @app.route("/api/reports", methods=["GET"])
+@login_required
 def api_reports():
     conn = get_db()
     rows = conn.execute("SELECT * FROM reports ORDER BY timestamp DESC").fetchall()
@@ -352,8 +485,8 @@ def api_reports():
     return jsonify([dict(row) for row in rows])
 
 
-# ── Phase 10: Weekly stats ────────────────────────────────────
 @app.route("/api/stats/weekly", methods=["GET"])
+@login_required
 def api_stats_weekly():
     conn = get_db()
     today = datetime.now().date()
@@ -371,8 +504,8 @@ def api_stats_weekly():
     return jsonify(result)
 
 
-# ── Phase 10: Export CSV ──────────────────────────────────────
 @app.route("/api/export/csv", methods=["GET"])
+@login_required
 def api_export_csv():
     conn = get_db()
     rows = conn.execute(
@@ -387,18 +520,11 @@ def api_export_csv():
                      "latitude", "longitude", "status", "timestamp", "description", "recommended_action", "public_url"])
     for row in rows:
         writer.writerow([
-            row["id"],
-            row["image_path"],
-            row["damage_type"],
-            round(row["confidence"], 4),
-            row["severity"],
-            row["latitude"],
-            row["longitude"],
-            row["status"],
-            row["timestamp"],
-            row["description"],
-            row["recommended_action"],
-            row.get("public_url") if isinstance(row, dict) else row["public_url"],
+            row["id"], row["image_path"], row["damage_type"],
+            round(row["confidence"], 4), row["severity"],
+            row["latitude"], row["longitude"], row["status"],
+            row["timestamp"], row["description"], row["recommended_action"],
+            row["public_url"],
         ])
 
     output.seek(0)
@@ -410,8 +536,8 @@ def api_export_csv():
     )
 
 
-# ── Phase 13: Status Tracking ─────────────────────────────────
 @app.route("/api/report/<int:report_id>/status", methods=["PATCH", "OPTIONS"])
+@login_required
 def update_status(report_id):
     if request.method == "OPTIONS":
         return "", 204

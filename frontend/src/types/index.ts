@@ -26,3 +26,10 @@ export interface SubmitResponse {
   thumbnail_path?: string;
   error?: string;
 }
+
+export interface User {
+  id: number;
+  email: string;
+  name: string;
+  role: string;
+}
