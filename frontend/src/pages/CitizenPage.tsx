@@ -16,11 +16,19 @@ export default function CitizenPage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   // ── File select ──────────────────────────────────────────────
+  // Use object URL for preview to avoid base64 strings being used in requests
   function handleFile(file: File) {
-    const reader = new FileReader();
-    reader.onload = (e) => setPreview(e.target?.result as string);
-    reader.readAsDataURL(file);
-    setFileName(file.name);
+    try {
+      const url = URL.createObjectURL(file);
+      setPreview(url);
+      setFileName(file.name);
+    } catch (e) {
+      // fallback to FileReader only for preview if createObjectURL fails
+      const reader = new FileReader();
+      reader.onload = (ev) => setPreview(ev.target?.result as string);
+      reader.readAsDataURL(file);
+      setFileName(file.name);
+    }
   }
 
   // ── GPS ──────────────────────────────────────────────────────
@@ -63,8 +71,19 @@ export default function CitizenPage() {
       return;
     }
 
+    const file = fileRef.current.files[0];
+    // Client-side validation
+    const MAX_BYTES = 10 * 1024 * 1024;
+    if (file.size > MAX_BYTES) {
+      setValidation("File too large (max 10MB)");
+      return;
+    }
+
+    console.log('Preparing to upload file:', file, 'size:', file.size, 'type:', file.type);
     const formData = new FormData();
-    formData.append("photo", fileRef.current.files[0]);
+    // Send raw file as 'photo' (backend expects 'photo' and will forward to n8n as 'image')
+    // Important: do NOT set Content-Type header; let the browser set multipart boundary.
+    formData.append("photo", file, file.name);
     formData.append("latitude", lat);
     formData.append("longitude", lng);
 
@@ -79,8 +98,11 @@ export default function CitizenPage() {
     });
 
     try {
-      const res = await fetch("/submit", { method: "POST", body: formData });
-      const data: SubmitResponse = await res.json();
+      // Proxy approach: send to our Flask backend at relative path; backend will forward to n8n
+      const backendRes = await fetch("/submit", { method: "POST", body: formData });
+      const backendJson = await backendRes.json();
+
+      const data: SubmitResponse = backendJson;
       Swal.close();
 
       if (data.success) {
@@ -120,6 +142,9 @@ export default function CitizenPage() {
 
   // ── Reset ────────────────────────────────────────────────────
   function resetForm() {
+    if (preview && preview.startsWith("blob:")) {
+      try { URL.revokeObjectURL(preview); } catch {}
+    }
     setPreview(null);
     setFileName("");
     setLat("");

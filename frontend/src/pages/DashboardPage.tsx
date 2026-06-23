@@ -8,17 +8,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 
 // ── Types ────────────────────────────────────────────────────
-export interface Report {
-  id: number;
-  image_path: string;
-  damage_type: string;
-  confidence: number;
-  severity: string;
-  latitude: number;
-  longitude: number;
-  status: string;
-  timestamp: string;
-}
+import type { Report } from "../types";
 
 interface WeeklyStat {
   date: string;
@@ -238,30 +228,32 @@ export default function DashboardPage() {
     const heatData: [number, number, number][] = [];
 
     reports.forEach((r) => {
-      const color =
-        r.status === "Fixed"
-          ? "#6b7280"
-          : r.status === "In Progress"
-            ? "#60a5fa"
-            : (SEVERITY_COLOR[r.severity] ?? "#94a3b8");
+      // Highlight urgent recommended actions
+      let color = (SEVERITY_COLOR[r.severity] ?? "#94a3b8");
+      if (r.status === "Fixed") color = "#6b7280";
+      else if (r.status === "In Progress") color = "#60a5fa";
+      else if (r.recommended_action && String(r.recommended_action).toLowerCase().includes("urgent")) {
+        color = "#ff2d55"; // urgent highlight
+      }
       const intensity =
         r.severity === "High" ? 1.0 : r.severity === "Medium" ? 0.6 : 0.3;
       heatData.push([r.latitude, r.longitude, intensity]);
 
       const confidencePct = `${Math.round(r.confidence * 100)}%`;
-      const imgUrl = r.image_path.startsWith("/")
-        ? r.image_path
-        : `/${r.image_path}`;
+      const imgUrl = (r.thumbnail_path || r.image_path);
+      const imgSrc = imgUrl && imgUrl.startsWith("/") ? imgUrl : `/${imgUrl}`;
 
       const popupHtml = `
-  <div class="jalanscan-popup" style="min-width:200px;max-width:240px;font-family:'Poppins',sans-serif;">
-    <img src="${imgUrl}" alt="Damage photo" onerror="this.style.display='none'" />
+    <div class="jalanscan-popup" style="min-width:200px;max-width:240px;font-family:'Poppins',sans-serif;">
+      <img src="${imgSrc}" alt="Damage photo" onerror="this.style.display='none'" />
     <p style="font-size:13px;font-weight:700;color:#f1f5f9;margin:0 0 4px 0;">${r.damage_type}</p>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
       <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:${color}22;color:${color};border:1px solid ${color}55;font-weight:600;">${r.severity}</span>
       <span style="font-size:11px;color:#94a3b8;">Confidence: <b style="color:#e2e8f0;">${confidencePct}</b></span>
     </div>
     <p style="font-size:11px;color:#64748b;margin:0 0 8px 0;">${r.timestamp}</p>
+    ${r.description ? `<p style="font-size:12px;color:#cbd5e1;margin:0 0 8px 0;">${r.description}</p>` : ''}
+    ${r.recommended_action ? `<p style="font-size:12px;color:#9ae6b4;margin:0 0 8px 0;font-weight:600;">Action: ${r.recommended_action}</p>` : ''}
     <div style="display:flex;align-items:center;gap:8px;">
       <label style="font-size:11px;color:#94a3b8;">Status:</label>
       <select
@@ -448,11 +440,11 @@ export default function DashboardPage() {
   }, [cdnReady]);
 
   // ── Phase 13: expose status updater to popup HTML ────────────
-  (window as any).jalanUpdateStatus = async (
-    id: number,
-    newStatus: string,
-    selectEl: HTMLSelectElement,
-  ) => {
+    (window as any).jalanUpdateStatus = async (
+      id: number,
+      newStatus: Report['status'],
+      selectEl: HTMLSelectElement,
+    ) => {
     try {
       const res = await fetch(`/api/report/${id}/status`, {
         method: "PATCH",
