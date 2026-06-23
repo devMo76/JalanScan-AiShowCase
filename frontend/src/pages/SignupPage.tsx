@@ -6,12 +6,14 @@ import HlsBackgroundVideo from "../components/HlsBackgroundVideo";
 import { useAuth } from "../context/AuthContext";
 import "./LandingPage.css";
 
-export default function LoginPage() {
-  const { login } = useAuth();
+export default function SignupPage() {
+  const { signup } = useAuth();
   const navigate = useNavigate();
 
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -19,17 +21,26 @@ export default function LoginPage() {
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setError("");
-    setLoading(true);
 
-    const result = await login(email.trim(), password);
-
-    setLoading(false);
-    if (result.success) {
-      navigate("/dashboard", { replace: true });
+    if (password !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
       return;
     }
 
-    setError(result.error || "Login failed");
+    setLoading(true);
+    const result = await signup(name.trim(), email.trim(), password);
+    setLoading(false);
+
+    if (result.success) {
+      navigate("/report", { replace: true });
+      return;
+    }
+
+    setError(result.error || "Signup failed");
   };
 
   return (
@@ -54,14 +65,14 @@ export default function LoginPage() {
         <div className="login-shell__intro">
           <p className="section-eyebrow">
             <span />
-            Authority Portal
+            Citizen Portal
           </p>
           <h1>
-            Sign in to the <em>dashboard</em>
+            Create your <em>account</em>
           </h1>
           <p>
-            Access live road reports, review AI detections, update repair
-            status, and export maintenance-ready data.
+            Sign up to report road damage in your area. Your submissions go
+            directly to city maintenance authorities in real time.
           </p>
         </div>
 
@@ -71,11 +82,28 @@ export default function LoginPage() {
               <i className="fa-solid fa-road" />
             </span>
             <div>
-              <h2>Welcome back</h2>
-              <p>Use your authority credentials.</p>
+              <h2>Get started</h2>
+              <p>Create a free citizen account.</p>
             </div>
           </div>
 
+          {/* Name */}
+          <label className="login-field">
+            <span>Full name</span>
+            <span className="login-field__control">
+              <i className="fa-solid fa-user" />
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                placeholder="Your full name"
+                autoComplete="name"
+              />
+            </span>
+          </label>
+
+          {/* Email */}
           <label className="login-field">
             <span>Email address</span>
             <span className="login-field__control">
@@ -83,14 +111,15 @@ export default function LoginPage() {
               <input
                 type="email"
                 value={email}
-                onChange={(event) => setEmail(event.target.value)}
+                onChange={(e) => setEmail(e.target.value)}
                 required
-                placeholder="admin@jalanscan.ai"
+                placeholder="you@example.com"
                 autoComplete="email"
               />
             </span>
           </label>
 
+          {/* Password */}
           <label className="login-field">
             <span>Password</span>
             <span className="login-field__control">
@@ -98,21 +127,39 @@ export default function LoginPage() {
               <input
                 type={showPassword ? "text" : "password"}
                 value={password}
-                onChange={(event) => setPassword(event.target.value)}
+                onChange={(e) => setPassword(e.target.value)}
                 required
-                placeholder="Enter password"
-                autoComplete="current-password"
+                placeholder="Min. 6 characters"
+                autoComplete="new-password"
               />
               <button
                 type="button"
                 className="login-field__toggle"
-                onClick={() => setShowPassword((current) => !current)}
+                onClick={() => setShowPassword((c) => !c)}
                 aria-label={showPassword ? "Hide password" : "Show password"}
               >
                 <i
-                  className={`fa-solid ${showPassword ? "fa-eye-slash" : "fa-eye"}`}
+                  className={`fa-solid ${
+                    showPassword ? "fa-eye-slash" : "fa-eye"
+                  }`}
                 />
               </button>
+            </span>
+          </label>
+
+          {/* Confirm password */}
+          <label className="login-field">
+            <span>Confirm password</span>
+            <span className="login-field__control">
+              <i className="fa-solid fa-lock" />
+              <input
+                type={showPassword ? "text" : "password"}
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                required
+                placeholder="Repeat your password"
+                autoComplete="new-password"
+              />
             </span>
           </label>
 
@@ -127,22 +174,28 @@ export default function LoginPage() {
             </motion.div>
           )}
 
-          <button type="submit" className="login-submit" disabled={loading}>
+          <button
+            type="submit"
+            className="login-submit"
+            disabled={loading}
+          >
             <span>
               {loading ? (
-                <>Signing in…</>
+                <>
+                  <span className="login-spinner" />
+                  Creating account…
+                </>
               ) : (
                 <>
-                  <i className="fa-solid fa-right-to-bracket" />
-                  Sign in
+                  <i className="fa-solid fa-user-plus" />
+                  Create account
                 </>
               )}
             </span>
           </button>
 
           <div className="login-form__footer">
-            <Link to="/signup">Sign up</Link>
-            <Link to="/report">Citizen report flow</Link>
+            <Link to="/login">Already have an account? Sign in</Link>
           </div>
         </form>
       </motion.section>

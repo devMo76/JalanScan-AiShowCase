@@ -47,7 +47,7 @@ export default function Navbar({ page }: Props) {
           </Link>
         ) : (
           <Link
-            to="/"
+            to="/report"
             className="text-slate-400 hover:text-white text-sm flex items-center gap-2 transition-colors"
           >
             <i className="fas fa-arrow-left"></i>

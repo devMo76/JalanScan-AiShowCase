@@ -350,11 +350,60 @@ def auth_register():
         return jsonify({"success": False, "error": "Email already exists"}), 409
 
 
+@app.route("/api/auth/signup", methods=["POST", "OPTIONS"])
+def auth_signup():
+    if request.method == "OPTIONS":
+        return "", 204
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "error": "No data provided"}), 400
+
+    email = data.get("email", "").strip().lower()
+    password = data.get("password", "")
+    name = data.get("name", "").strip()
+
+    if not email or not password or not name:
+        return jsonify({"success": False, "error": "Name, email and password are required"}), 400
+    if len(password) < 6:
+        return jsonify({"success": False, "error": "Password must be at least 6 characters"}), 400
+
+    if not bcrypt:
+        return jsonify({"success": False, "error": "Bcrypt not available"}), 500
+
+    hashed = bcrypt.generate_password_hash(password).decode("utf-8")
+    try:
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO users (email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?)",
+            (email, hashed, name, "citizen", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        conn.commit()
+        # Auto-login the new citizen by setting the session
+        new_user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        conn.close()
+        session["user_id"] = new_user["id"]
+        session["user_email"] = new_user["email"]
+        session["user_name"] = new_user["name"]
+        session["user_role"] = new_user["role"]
+        return jsonify({
+            "success": True,
+            "user": {
+                "id": new_user["id"],
+                "email": new_user["email"],
+                "name": new_user["name"],
+                "role": new_user["role"],
+            }
+        })
+    except sqlite3.IntegrityError:
+        return jsonify({"success": False, "error": "Email already exists"}), 409
+
 # ── Protected API routes ──────────────────────────────────────
 
 @app.route("/submit", methods=["POST"])
+@login_required
 def submit():
-    # /submit is public — citizens don't need to log in to report damage
+    # /submit now requires login — citizens must have an account to report
     try:
         if "photo" not in request.files:
             return jsonify({"success": False, "error": "No photo uploaded"}), 400

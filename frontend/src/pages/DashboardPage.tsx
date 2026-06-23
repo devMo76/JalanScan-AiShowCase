@@ -1,35 +1,47 @@
-// ============================================================
-// JalanScan Ai — DashboardPage.tsx
-// Phase 9:  Authority Dashboard — Layout       ✅
-// Phase 10: Map & Pins + Heatmap + Chart       ✅
-// Phase 12: Damage Type Filter (data-driven)   ✅
-// ============================================================
-
-import { useEffect, useRef, useState, useCallback } from "react";
-
-// ── Types ────────────────────────────────────────────────────
+import { AnimatePresence, motion } from "framer-motion";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import HlsBackgroundVideo from "../components/HlsBackgroundVideo";
+import { useAuth } from "../context/AuthContext";
 import type { Report } from "../types";
+import "./LandingPage.css";
 
 interface WeeklyStat {
   date: string;
   count: number;
 }
 
-// ── CDN loader ───────────────────────────────────────────────
+const severityColor: Record<Report["severity"], string> = {
+  High: "#f87171",
+  Medium: "#facc15",
+  Low: "#4ade80",
+};
+
+const statusColor: Record<Report["status"], string> = {
+  Pending: "#f87171",
+  "In Progress": "#60a5fa",
+  Fixed: "#6b7280",
+};
+
+const statusOptions: Report["status"][] = ["Pending", "In Progress", "Fixed"];
+
 function useCDN(onReady: () => void) {
   useEffect(() => {
+    let mounted = true;
+
     const loadScript = (src: string, id: string): Promise<void> => {
       return new Promise((resolve) => {
         if (document.getElementById(id)) {
           resolve();
           return;
         }
-        const el = document.createElement("script");
-        el.src = src;
-        el.id = id;
-        el.onload = () => resolve();
-        el.onerror = () => resolve();
-        document.head.appendChild(el);
+
+        const script = document.createElement("script");
+        script.src = src;
+        script.id = id;
+        script.onload = () => resolve();
+        script.onerror = () => resolve();
+        document.head.appendChild(script);
       });
     };
 
@@ -51,72 +63,97 @@ function useCDN(onReady: () => void) {
       .then(() =>
         loadScript("https://cdn.jsdelivr.net/npm/apexcharts", "apexcharts-js"),
       )
-      .then(() => onReady());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+      .then(() => {
+        if (mounted) onReady();
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [onReady]);
 }
 
-// ── Severity helpers ─────────────────────────────────────────
-const SEVERITY_COLOR: Record<string, string> = {
-  High: "#ef4444",
-  Medium: "#facc15",
-  Low: "#4ade80",
-};
+function getReportImage(report: Report) {
+  const path = report.thumbnail_path || report.image_path;
+  if (!path) return "";
+  return path.startsWith("/") ? path : `/${path}`;
+}
 
-// ── Sub-components ───────────────────────────────────────────
-interface StatCardProps {
+function formatCoordinate(value: number) {
+  const coordinate = Number(value);
+  if (!Number.isFinite(coordinate)) return "N/A";
+  return coordinate.toFixed(6);
+}
+
+function confidenceLabel(value: number) {
+  const confidence = Number(value);
+  if (!Number.isFinite(confidence)) return "N/A";
+  return `${Math.round(confidence * 100)}%`;
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function getMarkerColor(report: Report) {
+  if (report.status !== "Pending") return statusColor[report.status];
+  if (
+    report.recommended_action &&
+    report.recommended_action.toLowerCase().includes("urgent")
+  ) {
+    return "#ff4d7d";
+  }
+  return severityColor[report.severity] ?? "#94a3b8";
+}
+
+function StatTile({
+  icon,
+  label,
+  value,
+  detail,
+  tone,
+}: {
   icon: string;
   label: string;
-  value: number | string;
-  accent: "red" | "yellow" | "green" | "blue";
-}
-
-function StatCard({ icon, label, value, accent }: StatCardProps) {
-  const ring: Record<string, string> = {
-    red: "border-red-500   text-red-400    bg-red-500/10",
-    yellow: "border-yellow-400 text-yellow-400 bg-yellow-400/10",
-    green: "border-green-400  text-green-400  bg-green-400/10",
-    blue: "border-blue-400   text-blue-400   bg-blue-400/10",
-  };
-  const [border, text, bg] = ring[accent].split(" ");
+  value: string;
+  detail: string;
+  tone: "blue" | "red" | "yellow" | "green";
+}) {
   return (
-    <div
-      className={`relative flex items-center gap-4 rounded-xl border-l-4 px-5 py-4 bg-[#0f1a2e] shadow-lg hover:-translate-y-0.5 hover:shadow-xl transition-all duration-200 ${border}`}
-    >
-      <div
-        className={`flex h-11 w-11 items-center justify-center rounded-lg ${bg}`}
-      >
-        <i className={`${icon} text-xl ${text}`} />
-      </div>
-      <div className="min-w-0">
-        <p className="text-xs font-medium uppercase tracking-widest text-slate-400">
-          {label}
-        </p>
-        <p className={`mt-0.5 text-2xl font-bold tabular-nums text-white`}>
-          {value}
-        </p>
-      </div>
-    </div>
+    <article className={`dashboard-stat dashboard-stat--${tone}`}>
+      <i className={icon} />
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </article>
   );
 }
 
-interface ToggleBtnProps {
+function LayerButton({
+  icon,
+  label,
+  active,
+  onClick,
+}: {
   icon: string;
   label: string;
   active: boolean;
   onClick: () => void;
-}
-
-function ToggleBtn({ icon, label, active, onClick }: ToggleBtnProps) {
+}) {
   return (
     <button
+      type="button"
+      className={
+        active
+          ? "dashboard-layer dashboard-layer--active"
+          : "dashboard-layer"
+      }
       onClick={onClick}
-      className={`inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-semibold transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-red-500/50
-        ${
-          active
-            ? "border-red-500 bg-red-500 text-white shadow-md shadow-red-500/30"
-            : "border-slate-600 bg-[#0f1a2e] text-slate-300 hover:border-slate-400 hover:text-white"
-        }`}
     >
       <i className={icon} />
       {label}
@@ -124,12 +161,110 @@ function ToggleBtn({ icon, label, active, onClick }: ToggleBtnProps) {
   );
 }
 
-// ── Main component ───────────────────────────────────────────
+function DamageFilter({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const items = [
+    { value: "all", label: "All Damage Types" },
+    ...options.map((option) => ({ value: option, label: option })),
+  ];
+  const selected = items.find((item) => item.value === value) ?? items[0];
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div
+      ref={rootRef}
+      className={`dashboard-filter ${open ? "dashboard-filter--open" : ""}`}
+    >
+      <button
+        type="button"
+        className="dashboard-filter__button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <i className="fa-solid fa-filter" />
+        <span>{selected.label}</span>
+        <i className="fa-solid fa-chevron-down" />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            className="dashboard-filter__menu"
+            role="listbox"
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.16, ease: "easeOut" }}
+          >
+            {items.map((item) => {
+              const active = item.value === value;
+
+              return (
+                <button
+                  key={item.value}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  className={
+                    active
+                      ? "dashboard-filter__option dashboard-filter__option--active"
+                      : "dashboard-filter__option"
+                  }
+                  onClick={() => {
+                    onChange(item.value);
+                    setOpen(false);
+                  }}
+                >
+                  <span className="dashboard-filter__radio" />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
+  const { logout, user } = useAuth();
+  const navigate = useNavigate();
   const mapDivRef = useRef<HTMLDivElement>(null);
   const chartDivRef = useRef<HTMLDivElement>(null);
-
-  // Leaflet instances stored in refs (not state) to avoid re-render loops
   const leafletMapRef = useRef<any>(null);
   const pinsLayerRef = useRef<any>(null);
   const heatLayerRef = useRef<any>(null);
@@ -137,49 +272,72 @@ export default function DashboardPage() {
   const apexChartRef = useRef<any>(null);
 
   const [cdnReady, setCdnReady] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
   const [reports, setReports] = useState<Report[]>([]);
   const [activeLayer, setActiveLayer] = useState<"pins" | "heatmap">("pins");
   const [filterValue, setFilterValue] = useState("all");
-  const [stats, setStats] = useState({
-    total: "—",
-    high: "—",
-    medium: "—",
-    lowFixed: "—",
-  });
+  const [loadingReports, setLoadingReports] = useState(true);
+  const [error, setError] = useState("");
 
-  // Unique damage types present in the data, for the filter dropdown
-  const damageTypes = Array.from(
-    new Set(reports.map((r) => r.damage_type)),
-  ).sort();
-
-  // ── 1. Load CDNs, then fetch data ─────────────────────────
   useCDN(useCallback(() => setCdnReady(true), []));
 
-  useEffect(() => {
-    if (!cdnReady) return;
-    fetchReports();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cdnReady]);
-
-  const fetchReports = async () => {
+  const fetchReports = useCallback(async () => {
+    setLoadingReports(true);
+    setError("");
     try {
-      const res = await fetch("/api/reports");
+      const res = await fetch("/api/reports", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch reports");
       const data: Report[] = await res.json();
       setReports(data);
-    } catch (err) {
-      console.error("Failed to fetch reports:", err);
+    } catch {
+      setError("Could not load dashboard reports. Check that Flask is running.");
+    } finally {
+      setLoadingReports(false);
     }
-  };
+  }, []);
 
-  // ── 2. Initialise Leaflet once CDN is ready ───────────────
   useEffect(() => {
-    if (!cdnReady || !mapDivRef.current) return;
-    const L = (window as any).L;
-    if (!L || leafletMapRef.current) return;
+    fetchReports();
+  }, [fetchReports]);
 
-    // Remove placeholder content
-    const placeholder = document.getElementById("map-placeholder");
-    if (placeholder) placeholder.remove();
+  const damageTypes = useMemo(
+    () => Array.from(new Set(reports.map((report) => report.damage_type))).sort(),
+    [reports],
+  );
+
+  const visibleReports = useMemo(() => {
+    if (filterValue === "all") return reports;
+    return reports.filter((report) => report.damage_type === filterValue);
+  }, [filterValue, reports]);
+
+  const stats = useMemo(() => {
+    const high = visibleReports.filter(
+      (report) => report.severity === "High",
+    ).length;
+    const medium = visibleReports.filter(
+      (report) => report.severity === "Medium",
+    ).length;
+    const lowFixed = visibleReports.filter(
+      (report) => report.severity === "Low" || report.status === "Fixed",
+    ).length;
+    const pending = visibleReports.filter(
+      (report) => report.status === "Pending",
+    ).length;
+
+    return {
+      total: String(visibleReports.length),
+      high: String(high),
+      medium: String(medium),
+      lowFixed: String(lowFixed),
+      pending: String(pending),
+    };
+  }, [visibleReports]);
+
+  useEffect(() => {
+    if (!cdnReady || !mapDivRef.current || leafletMapRef.current) return;
+
+    const L = (window as any).L;
+    if (!L) return;
 
     const map = L.map(mapDivRef.current, {
       center: [3.139, 101.6869],
@@ -188,125 +346,157 @@ export default function DashboardPage() {
     });
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "© OpenStreetMap contributors",
+      attribution: "OpenStreetMap contributors",
       maxZoom: 19,
     }).addTo(map);
 
-    // Custom CSS for dark map tiles overlay
-    const style = document.createElement("style");
-    style.textContent = `
-      .leaflet-tile { filter: brightness(0.82) saturate(0.7) hue-rotate(190deg); }
-      .leaflet-popup-content-wrapper {
-        background: #0f1a2e !important;
-        border: 1px solid rgba(100,116,139,0.4) !important;
-        border-radius: 12px !important;
-        box-shadow: 0 20px 40px rgba(0,0,0,0.6) !important;
-        color: #e2e8f0 !important;
-      }
-      .leaflet-popup-tip { background: #0f1a2e !important; }
-      .leaflet-popup-close-button { color: #94a3b8 !important; }
-      .jalanscan-popup img { border-radius: 8px; display: block; width: 100%; max-height: 130px; object-fit: cover; margin-bottom: 10px; }
-    `;
-    document.head.appendChild(style);
+    if (!document.getElementById("jalanscan-dashboard-map-style")) {
+      const style = document.createElement("style");
+      style.id = "jalanscan-dashboard-map-style";
+      style.textContent = `
+        .dashboard-map .leaflet-tile {
+          filter: brightness(0.72) saturate(0.72) hue-rotate(188deg);
+        }
+        .dashboard-map .leaflet-control-zoom a {
+          background: rgba(5, 5, 5, 0.82) !important;
+          border-color: rgba(255, 255, 255, 0.12) !important;
+          color: #f5f5f5 !important;
+        }
+        .dashboard-map .leaflet-popup-content-wrapper {
+          background: #0d0d0d !important;
+          border: 1px solid rgba(255, 255, 255, 0.14) !important;
+          border-radius: 18px !important;
+          box-shadow: 0 24px 60px rgba(0,0,0,0.58) !important;
+          color: #f5f5f5 !important;
+        }
+        .dashboard-map .leaflet-popup-tip {
+          background: #0d0d0d !important;
+        }
+        .dashboard-map .leaflet-popup-close-button {
+          color: rgba(245,245,245,0.72) !important;
+        }
+        .jalanscan-popup {
+          font-family: Inter, sans-serif;
+        }
+        .jalanscan-popup img {
+          display: block;
+          width: 100%;
+          max-height: 140px;
+          border-radius: 14px;
+          object-fit: cover;
+          margin-bottom: 12px;
+        }
+      `;
+      document.head.appendChild(style);
+    }
 
     pinsLayerRef.current = L.layerGroup().addTo(map);
-    heatLayerRef.current = L.layerGroup(); // not added yet
+    heatLayerRef.current = L.layerGroup();
     leafletMapRef.current = map;
+    setMapReady(true);
+
+    window.setTimeout(() => map.invalidateSize(), 160);
   }, [cdnReady]);
 
-  // ── 3. Place pins whenever reports change ─────────────────
   useEffect(() => {
-    if (!leafletMapRef.current || reports.length === 0) return;
-    const L = (window as any).L;
-    const pinsLayer = pinsLayerRef.current;
+    if (!mapReady || !leafletMapRef.current || !pinsLayerRef.current) return;
 
-    // Clear old pins
+    const L = (window as any).L;
+    const map = leafletMapRef.current;
+    const pinsLayer = pinsLayerRef.current;
+    const heatLayerFactory = (window as any).L?.heatLayer;
+
     pinsLayer.clearLayers();
     allMarkersRef.current = [];
 
-    // Build heat data
     const heatData: [number, number, number][] = [];
+    const bounds: [number, number][] = [];
 
-    reports.forEach((r) => {
-      // Highlight urgent recommended actions
-      let color = (SEVERITY_COLOR[r.severity] ?? "#94a3b8");
-      if (r.status === "Fixed") color = "#6b7280";
-      else if (r.status === "In Progress") color = "#60a5fa";
-      else if (r.recommended_action && String(r.recommended_action).toLowerCase().includes("urgent")) {
-        color = "#ff2d55"; // urgent highlight
-      }
+    visibleReports.forEach((report) => {
+      const lat = Number(report.latitude);
+      const lng = Number(report.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+      const color = getMarkerColor(report);
       const intensity =
-        r.severity === "High" ? 1.0 : r.severity === "Medium" ? 0.6 : 0.3;
-      heatData.push([r.latitude, r.longitude, intensity]);
+        report.severity === "High" ? 1 : report.severity === "Medium" ? 0.65 : 0.35;
+      const image = getReportImage(report);
+      const safeImage = escapeHtml(image);
 
-      const confidencePct = `${Math.round(r.confidence * 100)}%`;
-      const imgUrl = (r.thumbnail_path || r.image_path);
-      const imgSrc = imgUrl && imgUrl.startsWith("/") ? imgUrl : `/${imgUrl}`;
+      heatData.push([lat, lng, intensity]);
+      bounds.push([lat, lng]);
 
       const popupHtml = `
-    <div class="jalanscan-popup" style="min-width:200px;max-width:240px;font-family:'Poppins',sans-serif;">
-      <img src="${imgSrc}" alt="Damage photo" onerror="this.style.display='none'" />
-    <p style="font-size:13px;font-weight:700;color:#f1f5f9;margin:0 0 4px 0;">${r.damage_type}</p>
-    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
-      <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:${color}22;color:${color};border:1px solid ${color}55;font-weight:600;">${r.severity}</span>
-      <span style="font-size:11px;color:#94a3b8;">Confidence: <b style="color:#e2e8f0;">${confidencePct}</b></span>
-    </div>
-    <p style="font-size:11px;color:#64748b;margin:0 0 8px 0;">${r.timestamp}</p>
-    ${r.description ? `<p style="font-size:12px;color:#cbd5e1;margin:0 0 8px 0;">${r.description}</p>` : ''}
-    ${r.recommended_action ? `<p style="font-size:12px;color:#9ae6b4;margin:0 0 8px 0;font-weight:600;">Action: ${r.recommended_action}</p>` : ''}
-    <div style="display:flex;align-items:center;gap:8px;">
-      <label style="font-size:11px;color:#94a3b8;">Status:</label>
-      <select
-        id="status-select-${r.id}"
-        onchange="window.jalanUpdateStatus(${r.id}, this.value, this)"
-        style="flex:1;background:#07111f;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:3px 6px;font-size:11px;font-family:'Poppins',sans-serif;cursor:pointer;"
-      >
-        <option value="Pending" ${r.status === "Pending" ? "selected" : ""}>Pending</option>
-        <option value="In Progress" ${r.status === "In Progress" ? "selected" : ""}>In Progress</option>
-        <option value="Fixed" ${r.status === "Fixed" ? "selected" : ""}>Fixed</option>
-      </select>
-    </div>
-  </div>
-`;
+        <div class="jalanscan-popup" style="min-width:210px;max-width:260px;">
+          ${image ? `<img src="${safeImage}" alt="Damage photo" onerror="this.style.display='none'" />` : ""}
+          <p style="font-size:14px;font-weight:800;color:#f5f5f5;margin:0 0 6px 0;">${escapeHtml(report.damage_type)}</p>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <span style="font-size:11px;padding:4px 9px;border-radius:999px;background:${color}22;color:${color};border:1px solid ${color}55;font-weight:800;">${escapeHtml(report.severity)}</span>
+            <span style="font-size:11px;color:#a3a3a3;">Confidence: <b style="color:#f5f5f5;">${confidenceLabel(report.confidence)}</b></span>
+          </div>
+          ${report.description ? `<p style="font-size:12px;color:#d4d4d4;margin:0 0 10px 0;line-height:1.45;">${escapeHtml(report.description)}</p>` : ""}
+          ${report.recommended_action ? `<p style="font-size:12px;color:#b7d5f2;margin:0 0 10px 0;font-weight:700;line-height:1.45;">Action: ${escapeHtml(report.recommended_action)}</p>` : ""}
+          <div style="display:grid;gap:7px;">
+            <span style="font-size:11px;color:#8c8c8c;">${escapeHtml(formatCoordinate(report.latitude))}, ${escapeHtml(formatCoordinate(report.longitude))}</span>
+            <select
+              data-prev="${escapeHtml(report.status)}"
+              onchange="window.jalanUpdateStatus(${report.id}, this.value, this)"
+              style="width:100%;background:#050505;color:#f5f5f5;border:1px solid rgba(255,255,255,.16);border-radius:999px;padding:8px 10px;font-size:12px;font-family:Inter,sans-serif;cursor:pointer;"
+            >
+              ${statusOptions
+                .map(
+                  (status) =>
+                    `<option value="${status}" ${report.status === status ? "selected" : ""}>${status}</option>`,
+                )
+                .join("")}
+            </select>
+          </div>
+        </div>
+      `;
 
-      const marker = L.circleMarker([r.latitude, r.longitude], {
+      const marker = L.circleMarker([lat, lng], {
         radius: 9,
         fillColor: color,
-        color: "#07111f",
+        color: "#050505",
         weight: 2,
         opacity: 1,
-        fillOpacity: 0.9,
-      }).bindPopup(popupHtml, { maxWidth: 260 });
+        fillOpacity: 0.92,
+      }).bindPopup(popupHtml, { maxWidth: 280 });
 
       pinsLayer.addLayer(marker);
-      allMarkersRef.current.push({ marker, report: r });
+      allMarkersRef.current.push({ marker, report });
     });
 
-    // Rebuild heat layer
-    const map = leafletMapRef.current;
-    const L_heat = (window as any).L.heatLayer;
-    if (L_heat) {
+    if (heatLayerFactory) {
       if (heatLayerRef.current && map.hasLayer(heatLayerRef.current)) {
         map.removeLayer(heatLayerRef.current);
       }
-      heatLayerRef.current = L_heat(heatData, {
-        radius: 28,
-        blur: 18,
+      heatLayerRef.current = heatLayerFactory(heatData, {
+        radius: 30,
+        blur: 20,
         maxZoom: 17,
-        gradient: { 0.4: "#facc15", 0.65: "#f97316", 1: "#ef4444" },
+        gradient: { 0.35: "#89aacc", 0.62: "#facc15", 1: "#f87171" },
       });
-      // Only add if heatmap mode is already active
+      // Only restore heat layer if it was already the active layer
       if (activeLayer === "heatmap") {
         heatLayerRef.current.addTo(map);
       }
+    } else {
+      heatLayerRef.current = L.layerGroup();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reports]);
 
-  // ── 4. Wire layer toggle ──────────────────────────────────
+    if (!map.hasLayer(pinsLayer)) pinsLayer.addTo(map);
+
+    if (bounds.length > 0) {
+      map.fitBounds(bounds, { padding: [38, 38], maxZoom: 13 });
+    }
+  }, [mapReady, visibleReports]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Layer toggle — fires only when the user switches, never rebuilds markers
   useEffect(() => {
     const map = leafletMapRef.current;
     if (!map) return;
+
     const pins = pinsLayerRef.current;
     const heat = heatLayerRef.current;
 
@@ -319,380 +509,367 @@ export default function DashboardPage() {
     }
   }, [activeLayer]);
 
-  // ── 5. Wire filter dropdown (single source of truth for stats) ──
   useEffect(() => {
-    allMarkersRef.current.forEach(({ marker, report }) => {
-      const pinsLayer = pinsLayerRef.current;
-      if (!pinsLayer) return;
-      const matches =
-        filterValue === "all" || report.damage_type === filterValue;
-      if (matches && !pinsLayer.hasLayer(marker)) {
-        pinsLayer.addLayer(marker);
-      } else if (!matches && pinsLayer.hasLayer(marker)) {
-        pinsLayer.removeLayer(marker);
-      }
-    });
+    if (!cdnReady || !chartDivRef.current) return undefined;
 
-    // Update stat cards for the filtered subset
-    const filtered =
-      filterValue === "all"
-        ? reports
-        : reports.filter((r) => r.damage_type === filterValue);
-    const high = filtered.filter((r) => r.severity === "High").length;
-    const medium = filtered.filter((r) => r.severity === "Medium").length;
-    const lowFixed = filtered.filter(
-      (r) => r.severity === "Low" || r.status === "Fixed",
-    ).length;
-    setStats({
-      total: String(filtered.length),
-      high: String(high),
-      medium: String(medium),
-      lowFixed: String(lowFixed),
-    });
-  }, [filterValue, reports]);
-
-  // ── 6. ApexCharts weekly trend ────────────────────────────
-  useEffect(() => {
-    if (!cdnReady || !chartDivRef.current) return;
+    let disposed = false;
 
     const renderChart = async () => {
       try {
-        const res = await fetch("/api/stats/weekly");
+        const res = await fetch("/api/stats/weekly", {
+          credentials: "include",
+        });
+        if (!res.ok) throw new Error("Weekly stats failed");
         const data: WeeklyStat[] = await res.json();
-
         const ApexCharts = (window as any).ApexCharts;
-        if (!ApexCharts) return;
+        if (!ApexCharts || disposed || !chartDivRef.current) return;
 
-        // Destroy previous instance
         if (apexChartRef.current) {
           apexChartRef.current.destroy();
           apexChartRef.current = null;
         }
 
-        // Remove placeholder skeleton
-        const placeholder = document.getElementById("chart-placeholder");
+        const placeholder = document.getElementById("dashboard-chart-placeholder");
         if (placeholder) placeholder.remove();
 
         const chart = new ApexCharts(chartDivRef.current, {
           chart: {
             type: "bar",
-            height: 240,
+            height: 280,
             background: "transparent",
             toolbar: { show: false },
-            animations: { enabled: true, easing: "easeinout", speed: 700 },
+            animations: { enabled: true, easing: "easeinout", speed: 650 },
           },
           theme: { mode: "dark" },
           plotOptions: {
-            bar: { borderRadius: 6, columnWidth: "50%", distributed: false },
+            bar: { borderRadius: 10, columnWidth: "46%" },
           },
+          colors: ["#89aacc"],
           fill: {
             type: "gradient",
             gradient: {
               shade: "dark",
               type: "vertical",
-              gradientToColors: ["#f97316"],
+              gradientToColors: ["#4e85bf"],
               stops: [0, 100],
             },
           },
-          colors: ["#ef4444"],
-          series: [{ name: "Reports", data: data.map((d) => d.count) }],
+          series: [{ name: "Reports", data: data.map((item) => item.count) }],
           xaxis: {
-            categories: data.map((d) => d.date),
+            categories: data.map((item) => item.date),
             labels: {
               style: {
-                colors: "#64748b",
-                fontFamily: "'Poppins', sans-serif",
+                colors: "#8c8c8c",
+                fontFamily: "Inter, sans-serif",
                 fontSize: "11px",
               },
             },
-            axisBorder: { color: "#1e293b" },
-            axisTicks: { color: "#1e293b" },
+            axisBorder: { color: "rgba(255,255,255,.1)" },
+            axisTicks: { color: "rgba(255,255,255,.1)" },
           },
           yaxis: {
+            min: 0,
+            tickAmount: 4,
             labels: {
               style: {
-                colors: "#64748b",
-                fontFamily: "'Poppins', sans-serif",
+                colors: "#8c8c8c",
+                fontFamily: "Inter, sans-serif",
                 fontSize: "11px",
               },
             },
-            min: 0,
-            tickAmount: 4,
           },
-          grid: { borderColor: "#1e293b", strokeDashArray: 4 },
+          grid: {
+            borderColor: "rgba(255,255,255,.09)",
+            strokeDashArray: 4,
+          },
           tooltip: {
             theme: "dark",
-            style: { fontFamily: "'Poppins', sans-serif" },
+            style: { fontFamily: "Inter, sans-serif" },
           },
           dataLabels: { enabled: false },
         });
 
         chart.render();
         apexChartRef.current = chart;
-      } catch (err) {
-        console.error("Chart failed:", err);
+      } catch {
+        setError("Weekly chart could not be loaded.");
       }
     };
 
-    // Small delay to ensure ApexCharts script is fully evaluated
-    const timer = setTimeout(renderChart, 600);
-    return () => clearTimeout(timer);
+    const timer = window.setTimeout(renderChart, 500);
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      if (apexChartRef.current) {
+        apexChartRef.current.destroy();
+        apexChartRef.current = null;
+      }
+    };
   }, [cdnReady]);
 
-  // ── Phase 13: expose status updater to popup HTML ────────────
+  useEffect(() => {
     (window as any).jalanUpdateStatus = async (
       id: number,
-      newStatus: Report['status'],
+      newStatus: Report["status"],
       selectEl: HTMLSelectElement,
     ) => {
-    try {
-      const res = await fetch(`/api/report/${id}/status`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
-      });
-      if (!res.ok) throw new Error("Request failed");
+      const previous = selectEl.dataset.prev || "Pending";
 
-      // Recolor the marker live
-      const entry = allMarkersRef.current.find((e) => e.report.id === id);
-      if (entry) {
-        entry.report.status = newStatus;
-        const newColor =
-          newStatus === "Fixed"
-            ? "#6b7280"
-            : newStatus === "In Progress"
-              ? "#60a5fa"
-              : (SEVERITY_COLOR[entry.report.severity] ?? "#94a3b8");
-        entry.marker.setStyle({ fillColor: newColor });
+      try {
+        const res = await fetch(`/api/report/${id}/status`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ status: newStatus }),
+        });
+        if (!res.ok) throw new Error("Status update failed");
+
+        setReports((currentReports) =>
+          currentReports.map((report) =>
+            report.id === id ? { ...report, status: newStatus } : report,
+          ),
+        );
+
+        const entry = allMarkersRef.current.find(
+          (markerEntry) => markerEntry.report.id === id,
+        );
+        if (entry) {
+          entry.report.status = newStatus;
+          entry.marker.setStyle({ fillColor: getMarkerColor(entry.report) });
+        }
+
+        selectEl.dataset.prev = newStatus;
+      } catch {
+        selectEl.value = previous;
+        setError("Status update failed. Try again.");
       }
-    } catch {
-      selectEl.value = selectEl.dataset.prev ?? "Pending";
-      alert("Failed to update status. Try again.");
-    }
-    selectEl.dataset.prev = newStatus;
+    };
+
+    return () => {
+      delete (window as any).jalanUpdateStatus;
+    };
+  }, []);
+
+  const handleLogout = async () => {
+    await logout();
+    navigate("/login", { replace: true });
   };
 
-  // ── Render ─────────────────────────────────────────────────
   return (
-    <div
-      className="min-h-screen bg-[#07111f] text-white"
-      style={{ fontFamily: "'Poppins', sans-serif" }}
-    >
-      <link
-        href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap"
-        rel="stylesheet"
-      />
-      <link
-        rel="stylesheet"
-        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
-      />
+    <main className="dashboard-page">
+      <div className="dashboard-page__video" aria-hidden="true">
+        <HlsBackgroundVideo />
+        <div className="dashboard-page__shade" />
+      </div>
+      <div className="dashboard-page__fade" aria-hidden="true" />
 
-      {/* ── Navbar ── */}
-      <nav className="sticky top-0 z-50 border-b border-slate-700/60 bg-[#07111f]/95 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-screen-xl items-center justify-between px-6 py-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-red-600 shadow-lg shadow-red-600/30">
-              <i className="fa-solid fa-road text-white" />
-            </div>
-            <div>
-              <span className="text-lg font-bold tracking-tight text-white">
-                JalanScan <span className="text-red-500">Ai</span>
-              </span>
-              <p className="text-[10px] font-medium uppercase tracking-widest text-slate-400">
-                Authority Dashboard
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="hidden items-center gap-2 text-xs text-slate-400 sm:flex">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
-              </span>
-              Live
-            </span>
-            <a
-              href="/"
-              className="inline-flex items-center gap-2 rounded-lg border border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:border-slate-400 hover:text-white"
-            >
-              <i className="fa-solid fa-camera" />
-              Citizen View
-            </a>
-          </div>
+      <nav className="dashboard-nav" aria-label="Dashboard navigation">
+        <Link className="report-brand" to="/">
+          <span>JS</span>
+          <strong>JalanScan AI</strong>
+        </Link>
+
+        <div className="dashboard-nav__links">
+          <span className="dashboard-live">
+            <span />
+            Live
+          </span>
+          {user?.role === "admin" && <Link to="/admin">Admin</Link>}
+          <Link to="/report">Report</Link>
+          <button type="button" onClick={handleLogout}>
+            Logout
+          </button>
         </div>
       </nav>
 
-      <main className="mx-auto max-w-screen-xl space-y-6 px-4 py-6 sm:px-6">
-        {/* ── Stat cards ── */}
-        <section
-          aria-label="Summary statistics"
-          className="grid grid-cols-2 gap-3 sm:grid-cols-4"
+      <motion.section
+        className="dashboard-hero"
+        initial={{ opacity: 0, y: 28 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8, ease: "easeOut" }}
+      >
+        <div>
+          <p className="section-eyebrow">
+            <span />
+            Authority Dashboard
+          </p>
+          <h1>
+            Road damage <em>command map</em>
+          </h1>
+          <p>
+            Track citizen reports, switch between pin-level evidence and heatmap
+            density, and export the latest maintenance-ready data.
+          </p>
+        </div>
+
+        <div className="dashboard-hero__panel">
+          <span>Active filter</span>
+          <strong>
+            {filterValue === "all" ? "All damage types" : filterValue}
+          </strong>
+          <small>{stats.pending} pending cases in current view</small>
+        </div>
+      </motion.section>
+
+      <motion.section
+        className="dashboard-stats"
+        aria-label="Dashboard summary"
+        initial={{ opacity: 0, y: 24 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8, delay: 0.12, ease: "easeOut" }}
+      >
+        <StatTile
+          icon="fa-solid fa-list-check"
+          label="Total Reports"
+          value={loadingReports ? "..." : stats.total}
+          detail="Visible cases"
+          tone="blue"
+        />
+        <StatTile
+          icon="fa-solid fa-circle-exclamation"
+          label="High Severity"
+          value={loadingReports ? "..." : stats.high}
+          detail="Needs priority review"
+          tone="red"
+        />
+        <StatTile
+          icon="fa-solid fa-triangle-exclamation"
+          label="Medium Severity"
+          value={loadingReports ? "..." : stats.medium}
+          detail="Monitor and schedule"
+          tone="yellow"
+        />
+        <StatTile
+          icon="fa-solid fa-circle-check"
+          label="Low / Fixed"
+          value={loadingReports ? "..." : stats.lowFixed}
+          detail="Lower risk or closed"
+          tone="green"
+        />
+      </motion.section>
+
+      <motion.section
+        className="dashboard-controls"
+        aria-label="Map controls"
+        initial={{ opacity: 0, y: 24 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8, delay: 0.18, ease: "easeOut" }}
+      >
+        <div className="dashboard-layer-group">
+          <LayerButton
+            icon="fa-solid fa-location-dot"
+            label="Pins"
+            active={activeLayer === "pins"}
+            onClick={() => setActiveLayer("pins")}
+          />
+          <LayerButton
+            icon="fa-solid fa-fire"
+            label="Heatmap"
+            active={activeLayer === "heatmap"}
+            onClick={() => setActiveLayer("heatmap")}
+          />
+        </div>
+
+        <DamageFilter
+          value={filterValue}
+          options={damageTypes}
+          onChange={setFilterValue}
+        />
+
+        <button
+          className="dashboard-refresh"
+          type="button"
+          onClick={fetchReports}
+          disabled={loadingReports}
         >
-          <StatCard
-            icon="fa-solid fa-chart-bar"
-            label="Total Reports"
-            value={stats.total}
-            accent="blue"
-          />
-          <StatCard
-            icon="fa-solid fa-circle-exclamation"
-            label="High Severity"
-            value={stats.high}
-            accent="red"
-          />
-          <StatCard
-            icon="fa-solid fa-triangle-exclamation"
-            label="Medium Severity"
-            value={stats.medium}
-            accent="yellow"
-          />
-          <StatCard
-            icon="fa-solid fa-circle-check"
-            label="Low / Fixed"
-            value={stats.lowFixed}
-            accent="green"
-          />
-        </section>
+          <i className="fa-solid fa-rotate-right" />
+          {loadingReports ? "Refreshing" : "Refresh"}
+        </button>
 
-        {/* ── Controls bar ── */}
-        <section
-          aria-label="Map controls"
-          className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-700/60 bg-[#0f1a2e] px-4 py-3"
+        <a className="dashboard-export" href="/api/export/csv" download>
+          <i className="fa-solid fa-file-csv" />
+          Export CSV
+        </a>
+      </motion.section>
+
+      {error && (
+        <motion.div
+          className="dashboard-alert"
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
         >
-          <div className="flex items-center gap-2">
-            <ToggleBtn
-              icon="fa-solid fa-location-dot"
-              label="Pins"
-              active={activeLayer === "pins"}
-              onClick={() => setActiveLayer("pins")}
-            />
-            <ToggleBtn
-              icon="fa-solid fa-fire"
-              label="Heatmap"
-              active={activeLayer === "heatmap"}
-              onClick={() => setActiveLayer("heatmap")}
-            />
-          </div>
-          <div className="hidden h-6 w-px bg-slate-700 sm:block" />
-          <div className="flex items-center gap-2">
-            <i className="fa-solid fa-filter text-xs text-slate-400" />
-            <select
-              value={filterValue}
-              onChange={(e) => setFilterValue(e.target.value)}
-              className="rounded-lg border border-slate-600 px-3 py-1.5 text-sm focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-500/50"
-              style={{
-                background: "#07111f",
-                color: "#cbd5e1",
-                colorScheme: "dark",
-              }}
-            >
-              <option value="all">All Damage Types</option>
-              {damageTypes.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="ml-auto" />
-          <a
-            href="/api/export/csv"
-            download
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-[#07111f] px-4 py-2 text-sm font-semibold text-slate-300 transition hover:border-green-400 hover:text-green-400 focus:outline-none focus:ring-2 focus:ring-green-400/40"
-          >
-            <i className="fa-solid fa-file-csv" />
-            Export CSV
-          </a>
-        </section>
+          <i className="fa-solid fa-circle-exclamation" />
+          <p>{error}</p>
+        </motion.div>
+      )}
 
-        {/* ── Map ── */}
-        <section aria-label="Damage map">
-          <div className="overflow-hidden rounded-xl border border-slate-700/60 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-700/60 bg-[#0f1a2e] px-4 py-2.5">
-              <div className="flex items-center gap-2 text-sm font-medium text-slate-300">
-                <i className="fa-solid fa-map text-red-400" />
-                Road Damage Map — Kuala Lumpur
-              </div>
-              <div className="flex items-center gap-3 text-xs text-slate-500">
-                <span className="flex items-center gap-1">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-red-500" />
-                  High
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-yellow-400" />
-                  Medium
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-green-400" />
-                  Low
-                </span>
-              </div>
-            </div>
-            <div
-              id="map"
-              ref={mapDivRef}
-              style={{ minHeight: "520px", background: "#0a1628" }}
-              className="w-full"
-            >
-              {!cdnReady && (
-                <div
-                  id="map-placeholder"
-                  className="flex h-full min-h-[520px] flex-col items-center justify-center gap-3 text-slate-500"
-                >
-                  <i className="fa-solid fa-map-location-dot text-4xl opacity-30" />
-                  <p className="text-sm">Map initialising…</p>
-                </div>
-              )}
-            </div>
+      <motion.section
+        className="dashboard-map-card"
+        aria-label="Damage map"
+        initial={{ opacity: 0, y: 24 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8, delay: 0.24, ease: "easeOut" }}
+      >
+        <div className="dashboard-card__header">
+          <div>
+            <i className="fa-solid fa-map" />
+            <span>Road Damage Map - Kuala Lumpur</span>
           </div>
-        </section>
-
-        {/* ── Weekly chart ── */}
-        <section aria-label="Weekly trend chart">
-          <div className="rounded-xl border border-slate-700/60 bg-[#0f1a2e] shadow-lg">
-            <div className="flex items-center justify-between border-b border-slate-700/60 px-5 py-3.5">
-              <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                <i className="fa-solid fa-chart-column text-red-400" />
-                Reports — Last 7 Days
-              </div>
-              <span className="rounded-full bg-slate-700/60 px-3 py-0.5 text-xs text-slate-400">
-                Auto-refreshes on load
-              </span>
-            </div>
-            <div className="px-4 py-4">
-              <div
-                id="weekly-chart"
-                ref={chartDivRef}
-                style={{ minHeight: "260px" }}
-                className="w-full"
-              >
-                {/* Skeleton bars — removed by ApexCharts once it renders */}
-                <div
-                  id="chart-placeholder"
-                  className="flex h-64 items-end justify-around gap-2 px-4 pb-4"
-                >
-                  {[40, 65, 30, 80, 55, 70, 45].map((h, i) => (
-                    <div
-                      key={i}
-                      className="flex flex-1 flex-col items-center gap-1"
-                    >
-                      <div
-                        className="w-full animate-pulse rounded-t-md bg-slate-700/60"
-                        style={{ height: `${h}%` }}
-                      />
-                      <span className="text-[10px] text-slate-600">—</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+          <div className="dashboard-legend">
+            <span>
+              <i className="dashboard-dot dashboard-dot--high" />
+              High
+            </span>
+            <span>
+              <i className="dashboard-dot dashboard-dot--medium" />
+              Medium
+            </span>
+            <span>
+              <i className="dashboard-dot dashboard-dot--low" />
+              Low
+            </span>
           </div>
-        </section>
+        </div>
 
-        <footer className="border-t border-slate-800 pb-6 pt-4 text-center text-xs text-slate-600">
-          JalanScan Ai · AI Showcase @ FAI 2026 · UTM Kuala Lumpur
-        </footer>
-      </main>
-    </div>
+        <div ref={mapDivRef} className="dashboard-map">
+          {!mapReady && (
+            <div id="map-placeholder" className="dashboard-placeholder">
+              <i className="fa-solid fa-map-location-dot" />
+              <p>{cdnReady ? "Map initialising..." : "Loading map engine..."}</p>
+            </div>
+          )}
+        </div>
+      </motion.section>
+
+      <motion.section
+        className="dashboard-chart-card"
+        aria-label="Weekly reports chart"
+        initial={{ opacity: 0, y: 24 }}
+        whileInView={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8, ease: "easeOut" }}
+        viewport={{ once: true, margin: "-80px" }}
+      >
+        <div className="dashboard-card__header">
+          <div>
+            <i className="fa-solid fa-chart-column" />
+            <span>Reports - Last 7 Days</span>
+          </div>
+          <span className="dashboard-chip">Auto-refreshes on load</span>
+        </div>
+
+        <div ref={chartDivRef} className="dashboard-chart">
+          <div id="dashboard-chart-placeholder" className="dashboard-chart-skeleton">
+            {[42, 66, 34, 80, 56, 72, 48].map((height, index) => (
+              <span key={index} style={{ height: `${height}%` }} />
+            ))}
+          </div>
+        </div>
+      </motion.section>
+
+      <footer className="dashboard-footer">
+        JalanScan AI - UTM Faculty of Artificial Intelligence - AI Showcase 2026
+      </footer>
+    </main>
   );
 }
